@@ -1,0 +1,24 @@
+# Chiavi e variabili d'ambiente segrete (MAI su GitHub!)
+.env
+*.env
+
+# Cache di Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.cpython-*.pyc
+
+# Database SQLite locali
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Ambienti virtuali
+venv/
+.venv/
+env/
+
+# File di sistema operativo
+.DS_Store
+Thumbs.db

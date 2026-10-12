@@ -1,0 +1,297 @@
+{
+  "partners": [
+    {
+      "id": "partner_gufo",
+      "name": "Ristorante Antico Gufo & Pesce",
+      "category": "restaurant",
+      "description": "Pesce fresco dell'Adriatico e cucina veneta rivisitata. Ambiente intimo a lume di candela.",
+      "price_level": "€€",
+      "lat": 45.5475,
+      "lng": 11.546,
+      "address": "Contra' Porti 6, Vicenza",
+      "contact_phone": "+39 0444 321123",
+      "opening_hours": {
+        "Monday": "19:30 - 23:30",
+        "Tuesday": "19:30 - 23:30",
+        "Wednesday": "19:30 - 23:30",
+        "Thursday": "19:30 - 23:30",
+        "Friday": "19:30 - 23:45",
+        "Saturday": "19:30 - 23:45",
+        "Sunday": "12:30 - 15:00, 19:30 - 23:00"
+      },
+      "is_24_7": 0,
+      "tags": [
+        "pesce",
+        "seafood",
+        "romantico",
+        "cena",
+        "vino",
+        "intimo"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=600"
+    },
+    {
+      "id": "partner_pam",
+      "name": "Pam Local Vicenza Centro",
+      "category": "supermarket",
+      "description": "Supermercato alimentare con orario continuato, alimenti bio e omogeneizzati per neonati.",
+      "price_level": "€",
+      "lat": 45.549,
+      "lng": 11.5445,
+      "address": "Contra' Do Rode 15, Vicenza",
+      "contact_phone": "+39 0444 543210",
+      "opening_hours": {
+        "Monday": "08:00 - 21:00",
+        "Tuesday": "08:00 - 21:00",
+        "Wednesday": "08:00 - 21:00",
+        "Thursday": "08:00 - 21:00",
+        "Friday": "08:00 - 21:00",
+        "Saturday": "08:00 - 21:00",
+        "Sunday": "09:00 - 20:00"
+      },
+      "is_24_7": 0,
+      "tags": [
+        "supermercato",
+        "alimentari",
+        "neonato",
+        "spesa",
+        "acqua"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1578916171728-46686eac8d58?w=600"
+    },
+    {
+      "id": "partner_farmacia_sanmarco",
+      "name": "Farmacia San Marco 24/7",
+      "category": "pharmacy",
+      "description": "Farmacia storica aperta 24 ore su 24 con reparto pediatrico e servizio notturno continuo.",
+      "price_level": "€€",
+      "lat": 45.551,
+      "lng": 11.545,
+      "address": "Contra' San Marco 32, Vicenza",
+      "contact_phone": "+39 0444 324455",
+      "opening_hours": {
+        "Everyday": "Open 24 Hours"
+      },
+      "is_24_7": 1,
+      "tags": [
+        "farmacia",
+        "24_7",
+        "pediatrico",
+        "emergenza",
+        "notturno",
+        "medicinali"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1586015555751-63bb77f4322a?w=600"
+    },
+    {
+      "id": "partner_fioreria_palladiana",
+      "name": "Fioreria Palladiana Boutique",
+      "category": "florist",
+      "description": "Composizioni floreali artistiche, rose fresche e consegna all'appartamento prima dell'arrivo.",
+      "price_level": "€€€",
+      "lat": 45.5485,
+      "lng": 11.543,
+      "address": "Corso Fogazzaro 48, Vicenza",
+      "contact_phone": "+39 0444 547788",
+      "opening_hours": {
+        "Monday": "09:00 - 19:30",
+        "Tuesday": "09:00 - 19:30",
+        "Wednesday": "09:00 - 19:30",
+        "Thursday": "09:00 - 19:30",
+        "Friday": "09:00 - 19:30",
+        "Saturday": "09:00 - 19:30",
+        "Sunday": "Chiuso"
+      },
+      "is_24_7": 0,
+      "tags": [
+        "fiori",
+        "fioraio",
+        "rose",
+        "compleanno",
+        "anniversario",
+        "sorpresa"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1526047932273-341f2a7631f9?w=600"
+    },
+    {
+      "id": "partner_soraru",
+      "name": "Pasticceria Sorarù 1860",
+      "category": "pastry",
+      "description": "Pasticceria storica sotto la Basilica Palladiana per torte di compleanno artigianali e colazioni.",
+      "price_level": "€€€",
+      "lat": 45.547,
+      "lng": 11.546,
+      "address": "Piazza dei Signori 5, Vicenza",
+      "contact_phone": "+39 0444 322233",
+      "opening_hours": {
+        "Tuesday": "08:00 - 20:00",
+        "Wednesday": "08:00 - 20:00",
+        "Thursday": "08:00 - 20:00",
+        "Friday": "08:00 - 20:30",
+        "Saturday": "08:00 - 20:30",
+        "Sunday": "08:30 - 19:30",
+        "Monday": "Chiuso"
+      },
+      "is_24_7": 0,
+      "tags": [
+        "pasticceria",
+        "torta",
+        "compleanno",
+        "colazione",
+        "brioche",
+        "caffe"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=600"
+    },
+    {
+      "id": "partner_lockers",
+      "name": "Radical Storage Lockers Vicenza",
+      "category": "locker",
+      "description": "Deposito bagagli automatico custodito e assicurato a 350m dalla casa con codice PIN digitale.",
+      "price_level": "€",
+      "lat": 45.548,
+      "lng": 11.551,
+      "address": "Piazza Matteotti 8, Vicenza",
+      "contact_phone": "+39 0444 899500",
+      "opening_hours": {
+        "Everyday": "07:30 - 22:30"
+      },
+      "is_24_7": 0,
+      "tags": [
+        "bagagli",
+        "valigie",
+        "locker",
+        "check-out",
+        "deposito"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=600"
+    },
+    {
+      "id": "partner_garage_fogazzaro",
+      "name": "Parcheggio Fogazzaro Custodito",
+      "category": "parking",
+      "description": "Parcheggio multipiano coperto con videosorveglianza. Regolarizza automaticamente l'accesso ZTL.",
+      "price_level": "€€",
+      "lat": 45.5495,
+      "lng": 11.5435,
+      "address": "Contra' San Biagio 19, Vicenza",
+      "contact_phone": "+39 0444 513344",
+      "opening_hours": {
+        "Everyday": "Open 24 Hours"
+      },
+      "is_24_7": 1,
+      "tags": [
+        "parcheggio",
+        "ztl",
+        "auto",
+        "garage",
+        "24_7"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=600"
+    }
+  ],
+  "upsell_packages": [
+    {
+      "id": "pkg_birthday_romance",
+      "title": "Welcome Birthday & Romance Experience",
+      "category": "welcome_pack",
+      "description": "Bottiglia di Prosecco Valdobbiadene DOCG ghiacciata + bouquet di fiori freschi della Fioreria Palladiana + scatola di dolci artigianali Sorarù pronti all'arrivo in camera.",
+      "price": 40.0,
+      "badge": "Consigliato per Coppie",
+      "items_included": [
+        "Bottiglia di Prosecco Valdobbiadene DOCG",
+        "Bouquet floreale fresco in vaso",
+        "Dolci tipici artigianali della Pasticceria Sorarù",
+        "Biglietto di auguri personalizzato scritto a mano"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=600",
+      "property_id": "prop_vicenza_01",
+      "currency": "EUR"
+    },
+    {
+      "id": "pkg_midnight_arrival",
+      "title": "Cestino Spuntino Notturno & Colazione",
+      "category": "midnight_pantry",
+      "description": "Arrivi a tarda sera o stanco dal viaggio? Fatti trovare focaccia fresca, formaggio Asiago DOP, acqua e brioche per la colazione di domani.",
+      "price": 18.0,
+      "badge": "Arrivi Notturni",
+      "items_included": [
+        "Focaccia all'olio d'oliva e Asiago DOP",
+        "2 bottiglie di acqua minerale naturale e frizzante",
+        "Succo di frutta bio e brioche fresche",
+        "Capsule extra di caffè Nespresso"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1541544741938-0af808871cc0?w=600",
+      "property_id": "prop_vicenza_01",
+      "currency": "EUR"
+    },
+    {
+      "id": "pkg_late_checkout",
+      "title": "Late Check-out Garantito (fino alle 15:00)",
+      "category": "late_checkout",
+      "description": "Prolunga il tuo soggiorno fino alle 15:00 (invece delle 10:00). Goditi una passeggiata mattutina a Vicenza senza fretta di fare le valigie.",
+      "price": 30.0,
+      "badge": "Massimo Relax",
+      "items_included": [
+        "Soggiorno prolungato fino alle 15:00",
+        "Squadra delle pulizie riprogrammata automaticamente",
+        "Codice della porta attivo fino alle 15:05"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=600",
+      "property_id": "prop_vicenza_01",
+      "currency": "EUR"
+    },
+    {
+      "id": "pkg_luggage_lockers",
+      "title": "Pass Deposito Bagagli Radical Storage",
+      "category": "luggage_storage",
+      "description": "Locker automatizzato a 350m dalla casa. Lascia i bagagli e visita la Basilica Palladiana in libertà.",
+      "price": 8.0,
+      "badge": "Comodità",
+      "items_included": [
+        "2 bagagli custoditi fino alle 22:30",
+        "Assicurazione inclusa fino a 3.000€",
+        "Accesso immediato con codice PIN digitale"
+      ],
+      "image_url": "https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=600",
+      "property_id": "prop_vicenza_01",
+      "currency": "EUR"
+    }
+  ],
+  "demo_guest": {
+    "id": "guest_marco",
+    "property_id": "prop_vicenza_01",
+    "full_name": "Marco Rossi",
+    "phone": "+39 340 1234567",
+    "email": "marco.rossi@example.com",
+    "check_in_date": "2026-10-15",
+    "check_out_date": "2026-10-18",
+    "preferences": {
+      "language": "it",
+      "dietary": [
+        "pesce",
+        "no glutine"
+      ],
+      "vibe_preference": [
+        "romantico",
+        "intimo"
+      ],
+      "budget_tier": "moderate"
+    },
+    "memory_graph": {
+      "occasion": "birthday",
+      "occasion_details": "Compleanno partner",
+      "has_infant": false,
+      "arrival_time": "20:30",
+      "travel_fatigue": true,
+      "likes": [
+        "pesce fresco",
+        "dolci artigianali"
+      ],
+      "active_concierge_notes": [
+        "Festeggia compleanno",
+        "Cerca cena romantica"
+      ]
+    }
+  }
+}
