@@ -45,6 +45,15 @@ class EmailPayload(BaseModel):
     body_markdown: str # il testo formattato in markdown
     cc: List[str] = Field(default_factory=list)
 
+class KnowledgePayload(BaseModel):
+    """I dati esatti per creare o aggiornare una nota nel Second Brain (Obsidian)."""
+    title: str
+    target_person_name: str
+    backlinks: List[str] = Field(default_factory=list)  # es: ["Filippo Calzavara", "Trellis", "PMS"]
+    bullet_insights: List[str] = Field(default_factory=list)  # Punti chiave e preferenze estratte
+    markdown_content: str  # Il testo formattato della nota
+
+
 
 class ProposedAction(BaseModel):
     """Una singola azione proposta dal sistema (Calendar o Gmail) con ciclo di vita e chiave di idempotenza."""
@@ -54,6 +63,7 @@ class ProposedAction(BaseModel):
     status: ActionStatus # stato dell'azione: PROPOSED, CONFLICT_DETECTED, APPROVED, EXECUTED, EXECUTION_FAILED, REJECTED, DISCARDED
     calendar_data: Optional[CalendarPayload] = None
     email_data: Optional[EmailPayload] = None
+    knowledge_data: Optional[KnowledgePayload] = None # nota da salvare nel second brain
     idempotency_key: str # chiave unica per ogni azione
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

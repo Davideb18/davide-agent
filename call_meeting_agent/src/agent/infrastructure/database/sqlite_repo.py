@@ -1,0 +1,252 @@
+import os
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any
+import aiosqlite
+
+from ...domain.models import Contact, ProposedAction, SessionExtractionResult
+from ...domain.enums import ActionStatus, ActionType, IntentCategory
+
+
+class SqliteRepository:
+    """Implementazione asincrona del RepositoryPort su database SQLite."""
+
+    def __init__(self, db_path: str = "data/call_agent.db") -> None:
+        self.db_path = db_path
+        # Assicura che la cartella 'data/' esista sul computer
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+
+    async def init_db(self) -> None:
+        """Legge lo schema.sql e crea le tabelle nel file SQLite se non esistono già."""
+        schema_path = Path(__file__).parent / "schema.sql"
+        with open(schema_path, "r", encoding="utf-8") as f:
+            schema_sql = f.read()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executescript(schema_sql)
+            await db.commit()
+
+    async def seed_default_contacts(self) -> None:
+        """Inserisce contatti di test per dimostrare l'agente e la risoluzione dei casi di omonimia."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM contacts") as cursor:
+                row = await cursor.fetchone()
+                if row and row[0] > 0:
+                    return  # I contatti sono già presenti, non facciamo nulla
+
+            demo_contacts = [
+                (
+                    "cnt_filippo",
+                    "Filippo",
+                    "Calzavara",
+                    "filippo@trellis.so",
+                    "Trellis",
+                    "Lead Engineer & Acting CTO",
+                    json.dumps(["Filippo", "Fil", "CTO Trellis"]),
+                    json.dumps(["trellis", "pms", "engineering", "colloquio"]),
+                    "Europe/Rome",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+                (
+                    "cnt_marco_rossi",
+                    "Marco",
+                    "Rossi",
+                    "marco.rossi@legalstudio.it",
+                    "Studio Legale Rossi",
+                    "Avvocato Contrattualista",
+                    json.dumps(["Marco Rossi", "Avvocato Marco"]),
+                    json.dumps(["legal", "contratti", "nda"]),
+                    "Europe/Rome",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+                (
+                    "cnt_marco_bianchi",
+                    "Marco",
+                    "Bianchi",
+                    "marco.bianchi@designstudio.io",
+                    "Design Studio",
+                    "Senior UI/UX Designer",
+                    json.dumps(["Marco Bianchi", "Marco Designer"]),
+                    json.dumps(["design", "figma", "frontend", "grafica"]),
+                    "Europe/Rome",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            ]
+
+            await db.executemany(
+                """
+                INSERT INTO contacts (
+                    id, first_name, last_name, email, company, role,
+                    aliases_json, tags_json, timezone, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                demo_contacts,
+            )
+            await db.commit()
+
+    async def get_contacts(self) -> List[Contact]:
+        """Recupera tutti i contatti salvati nel database per il Memory Graph."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM contacts ORDER BY first_name ASC") as cursor:
+                rows = await cursor.fetchall()
+                contacts: List[Contact] = []
+                for row in rows:
+                    contacts.append(
+                        Contact(
+                            id=row["id"],
+                            first_name=row["first_name"],
+                            last_name=row["last_name"],
+                            email=row["email"],
+                            company=row["company"],
+                            role=row["role"],
+                            aliases=json.loads(row["aliases_json"]),
+                            tags=json.loads(row["tags_json"]),
+                            timezone=row["timezone"],
+                        )
+                    )
+                return contacts
+
+    async def get_contact_by_id(self, contact_id: str) -> Optional[Contact]:
+        """Recupera un singolo contatto tramite il suo ID univoco."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return Contact(
+                    id=row["id"],
+                    first_name=row["first_name"],
+                    last_name=row["last_name"],
+                    email=row["email"],
+                    company=row["company"],
+                    role=row["role"],
+                    aliases=json.loads(row["aliases_json"]),
+                    tags=json.loads(row["tags_json"]),
+                    timezone=row["timezone"],
+                )
+
+    async def save_session(self, session: SessionExtractionResult) -> None:
+        """Salva l'intera sessione audio estratta e inserisce le relative azioni proposte."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # salva la sessione
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO sessions (
+                    id, is_actionable, intent_category, summary, raw_transcript, entities_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.session_id,
+                    1 if session.is_actionable else 0,
+                    session.intent_category.value,
+                    session.summary,
+                    session.raw_transcript,
+                    json.dumps([e.model_dump() for e in session.entities]),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+            # salva le azioni proposte collegate
+            for action in session.proposed_actions:
+                cal_json = action.calendar_data.model_dump_json() if action.calendar_data else None
+                mail_json = action.email_data.model_dump_json() if action.email_data else None
+
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO proposed_actions (
+                        id, session_id, action_type, status, calendar_data_json, email_data_json,
+                        idempotency_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        action.id,
+                        action.session_id,
+                        action.action_type.value,
+                        action.status.value,
+                        cal_json,
+                        mail_json,
+                        action.idempotency_key,
+                        action.created_at.isoformat(),
+                        action.updated_at.isoformat(),
+                    ),
+                )
+
+                # registra l'evento iniziale nell'Audit Log
+                await db.execute(
+                    """
+                    INSERT INTO audit_log (action_id, old_status, new_status, diff_payload_json, executed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        action.id,
+                        "NONE",
+                        action.status.value,
+                        None,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+
+            await db.commit()
+
+    async def update_action_status(
+        self, action_id: str, new_status: str, diff_payload: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Aggiorna lo stato di un'azione e traccia le modifiche dell'utente nell'Audit Log."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Recupera il vecchio stato
+            async with db.execute("SELECT status FROM proposed_actions WHERE id = ?", (action_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return
+                old_status = row[0]
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Aggiorna l'azione
+            await db.execute(
+                "UPDATE proposed_actions SET status = ?, updated_at = ? WHERE id = ?",
+                (new_status, now_iso, action_id),
+            )
+
+            # Scrive l'evento nell'Audit Log (The Trellis Way: tracciabilità totale)
+            diff_json = json.dumps(diff_payload) if diff_payload else None
+            await db.execute(
+                """
+                INSERT INTO audit_log (action_id, old_status, new_status, diff_payload_json, executed_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (action_id, old_status, new_status, diff_json, now_iso),
+            )
+            await db.commit()
+
+    async def is_idempotency_key_used(self, key: str) -> bool:
+        """Verifica se un'azione con questa chiave è già stata eseguita o approvata."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT 1 FROM proposed_actions WHERE idempotency_key = ? AND status = 'EXECUTED'",
+                (key,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row is not None
+
+
+# SCRIPT DI COLLAUDO IMMEDIATO
+if __name__ == "__main__":
+    import asyncio
+
+    async def test():
+        repo = SqliteRepository("data/test_call_agent.db")
+        await repo.init_db()
+        await repo.seed_default_contacts()
+        contacts = await repo.get_contacts()
+        print("=" * 60)
+        print("DATABASE COLLAUDATO CON SUCCESSO! 🎉")
+        print(f"Contatti caricati in rubrica: {len(contacts)}")
+        for c in contacts:
+            print(f"- {c.first_name} {c.last_name} ({c.company}): {c.email} [Tags: {c.tags}]")
+        print("=" * 60)
+
+    asyncio.run(test())
