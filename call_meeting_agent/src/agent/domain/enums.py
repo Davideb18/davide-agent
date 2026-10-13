@@ -15,6 +15,7 @@ class ActionType(str, Enum):
     """Identifica il tipo di azione da compiere verso l'esterno."""
     CALENDAR_EVENT = "CALENDAR_EVENT"
     EMAIL_DRAFT = "EMAIL_DRAFT"
+    KNOWLEDGE_NOTE = "KNOWLEDGE_NOTE"
 
 
 class IntentCategory(str, Enum):

@@ -15,7 +15,7 @@ from ...domain.enums import ActionStatus, ActionType, IntentCategory
 
 
 class GeminiExtractorAdapter:
-    """Implementazione reale del LLMExtractorPort tramite Google Gemini 2.5 Flash."""
+    """Implementazione reale del LLMExtractorPort tramite Google Gemini 3.5 Flash."""
 
     def __init__(
         self,
