@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any, Tuple
-from ..domain.models import ProposedAction, CalendarPayload, EmailPayload, KnowledgePayload
+from ..domain.models import ProposedAction, CalendarPayload, EmailPayload, KnowledgePayload, TaskPayload
 from ..domain.enums import ActionStatus, ActionType
 from ..domain.ports import (
     CalendarServicePort,
@@ -45,6 +45,8 @@ class CommitActionUseCase:
                 action.email_data = EmailPayload.model_validate(user_modified_payload)
             elif action.action_type == ActionType.KNOWLEDGE_NOTE and action.knowledge_data:
                 action.knowledge_data = KnowledgePayload.model_validate(user_modified_payload)
+            elif action.action_type == ActionType.TASK_TODO and action.task_data:
+                action.task_data = TaskPayload.model_validate(user_modified_payload)
 
         # 3. ESECUZIONE SPECIFICA PER TIPO DI AZIONE
         try:
@@ -76,6 +78,15 @@ class CommitActionUseCase:
                     meeting_ref=action.knowledge_data.title,
                 )
                 success_msg = f"Nota Second Brain creata e Dossier aggiornato! ({note_path})"
+
+            elif action.action_type == ActionType.TASK_TODO:
+                if not action.task_data:
+                    return False, "Dati dei task mancanti!"
+                tasks_path = await self.knowledge.append_tasks(
+                    payload=action.task_data,
+                    meeting_ref=action.task_data.target_project or "Meeting Sync"
+                )
+                success_msg = f"Checklist operativa salvata nei Task di Progetto! ({tasks_path})"
 
             else:
                 return False, f"Tipo di azione non supportato: {action.action_type}"

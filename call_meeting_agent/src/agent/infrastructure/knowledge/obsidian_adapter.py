@@ -2,31 +2,71 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from ...domain.models import KnowledgePayload
+from ...domain.models import KnowledgePayload, TaskPayload
 
 
 class ObsidianAdapter:
-    """Implementazione del KnowledgeServicePort: gestisce un Vault Markdown compatibile al 100% con Obsidian."""
+    """
+    Adattatore per Obsidian Second Brain:
+    Riconosce automaticamente la struttura del Second Brain personale di Davide
+    (ACTIVITY, IDENTITY, KNOWLEDGE, Home.md) e organizza in modo pulito e logico:
+      - ACTIVITY/Meetings/ : Note dettagliate degli incontri con metadati e backlink.
+      - PEOPLE/            : Dossier viventi e schede contatto arricchite nel tempo.
+      - Projects/Tasks.md  : Checklist operative delle cose da fare concordate.
+    """
 
-    def __init__(self, vault_path: str = "data/vault") -> None:
-        self.vault_path = Path(vault_path)
-        self.meetings_dir = self.vault_path / "meetings"
-        self.contacts_dir = self.vault_path / "contacts"
+    def __init__(self, vault_path: Optional[str] = None) -> None:
+        raw_path = vault_path or os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
+        self.vault_path = Path(raw_path).expanduser().resolve()
 
-        # Crea le cartelle del Vault se non esistono già
+        # Rilevamento intelligente della struttura del Second Brain
+        if (self.vault_path / "ACTIVITY").exists():
+            # Second Brain personale di Davide!
+            self.meetings_dir = self.vault_path / "ACTIVITY" / "Meetings"
+            self.contacts_dir = self.vault_path / "PEOPLE"
+        else:
+            # Fallback standard per vault isolati o cartelle demo
+            self.meetings_dir = self.vault_path / "meetings"
+            self.contacts_dir = self.vault_path / "contacts"
+
         os.makedirs(self.meetings_dir, exist_ok=True)
         os.makedirs(self.contacts_dir, exist_ok=True)
 
+        # Assicura il collegamento in Home.md se presente
+        self._ensure_home_dashboard_links()
+
     def _slugify(self, text: str) -> str:
-        """Pulisce un testo per usarlo in sicurezza come nome del file (es: 'Meeting Filippo' -> 'meeting_filippo')."""
+        """Pulisce un testo per usarlo in sicurezza come nome file."""
         text = text.lower().strip()
         text = re.sub(r"[^\w\s-]", "", text)
         return re.sub(r"[-\s]+", "_", text)
 
+    def _ensure_home_dashboard_links(self) -> None:
+        """Aggiorna la Dashboard Home.md se presente nel Second Brain per includere la sezione People & Meetings."""
+        home_path = self.vault_path / "Home.md"
+        if not home_path.exists():
+            return
+
+        try:
+            with open(home_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if "## 👥 Network & Relazioni" not in content:
+                network_section = (
+                    "\n## 👥 Network & Relazioni (Executive Agent)\n"
+                    "Persone, meeting e decisioni tracciate in tempo reale dall'Executive AI Agent.\n"
+                    "- **Dossier Contatti**: consulta le schede in `PEOPLE/`\n"
+                    "- **Storico Riunioni**: note di allineamento e accordi in `ACTIVITY/Meetings/`\n"
+                )
+                with open(home_path, "a", encoding="utf-8") as f:
+                    f.write(network_section)
+        except Exception:
+            pass
+
     async def save_meeting_note(self, payload: KnowledgePayload) -> str:
-        """Crea una nota d'incontro in formato Markdown con i backlink [[NomePersona]]."""
+        """Crea una nota d'incontro formattata con frontmatter YAML e backlink bi-direzionali."""
         now = datetime.now(timezone.utc)
         date_str = now.strftime("%Y-%m-%d")
         slug = self._slugify(payload.title)
@@ -34,23 +74,41 @@ class ObsidianAdapter:
         file_path = self.meetings_dir / filename
 
         # Costruisce i bi-directional link in formato Obsidian: [[Nome]]
-        backlinks_str = " ".join([f"[[{link}]]" for link in payload.backlinks])
+        backlinks_str = " ".join([f"[[{link}]]" for link in payload.backlinks if link != payload.target_person_name])
         insights_str = "\n".join([f"- {insight}" for insight in payload.bullet_insights])
 
-        markdown_body = f"""# {payload.title}
+        # Se menziona Trellis o CRM, colleghiamo anche Cold_Outreach_CRM
+        extra_project_links = ""
+        if "trellis" in payload.title.lower() or any("trellis" in b.lower() for b in payload.backlinks):
+            if (self.vault_path / "ACTIVITY" / "Projects" / "Internship_Hunt" / "Cold_Outreach_CRM.md").exists():
+                extra_project_links = " [[Cold_Outreach_CRM]] [[Internship_Hunt]]"
+
+        tags_yaml = "\n".join([f"  - {self._slugify(b)}" for b in payload.backlinks[:4]])
+
+        markdown_body = f"""---
+title: "{payload.title}"
+date: {date_str}
+type: meeting
+participant: "[[{payload.target_person_name}]]"
+tags:
+  - meeting
+{tags_yaml}
+---
+
+# {payload.title}
 
 - **Data:** {date_str}
 - **Partecipante principale:** [[{payload.target_person_name}]]
-- **Argomenti & Connessioni:** {backlinks_str}
+- **Connessioni & Argomenti:** {backlinks_str}{extra_project_links}
 
 ---
 
-## 💡 Insight Chiave & Decisioni
+## 💡 Decisioni Chiave & Insight
 {insights_str if insights_str else '- Nessun punto chiave specifico registrato.'}
 
 ---
 
-## 📝 Note Dettagliate
+## 📝 Note Dettagliate dell'Incontro
 {payload.markdown_content}
 """
 
@@ -62,21 +120,30 @@ class ObsidianAdapter:
     async def update_person_dossier(
         self, person_name: str, new_insights: List[str], meeting_ref: str
     ) -> str:
-        """Aggiorna il dossier vivente della persona, creando la scheda anagrafica se non esiste."""
+        """Aggiorna o crea il dossier vivente della persona nella cartella PEOPLE/."""
         clean_name = person_name.strip()
-        filename = f"{self._slugify(clean_name)}.md"
+        filename = f"{clean_name.replace(' ', '_')}.md"
         file_path = self.contacts_dir / filename
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Se il file della persona non esiste ancora, crea la copertina
+        # Se il file della persona non esiste ancora, crea la scheda iniziale con frontmatter
         if not file_path.exists():
-            initial_content = f"""# [[{clean_name}]]
+            initial_content = f"""---
+name: "{clean_name}"
+type: person
+tags:
+  - contact
+  - network
+created: {now_str}
+---
+
+# [[{clean_name}]]
 
 - **Tipo:** Dossier Persona / Relazione Professionale
 - **Creato il:** {now_str}
 
 ## 📌 Profilo & Preferenze Note
-Scheda generata e arricchita automaticamente dall'Executive AI Agent.
+Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le call.
 
 ---
 
@@ -98,36 +165,32 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent.
 
         return str(file_path)
 
+    async def append_tasks(self, payload: TaskPayload, meeting_ref: str) -> str:
+        """Salva o aggiorna una checklist di task operativi nella cartella Projects/Tasks.md."""
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if (self.vault_path / "ACTIVITY" / "Projects").exists():
+            tasks_file = self.vault_path / "ACTIVITY" / "Projects" / "Tasks.md"
+        else:
+            tasks_file = self.vault_path / "Tasks.md"
 
-# SCRIPT DI COLLAUDO IMMEDIATO
-if __name__ == "__main__":
-    import asyncio
+        if not tasks_file.exists():
+            initial = (
+                "# 📋 Registro Task & To-Do Operativi\n\n"
+                "Lista delle azioni concordate durante le call, tracciate dall'Executive AI Agent.\n\n"
+                "---\n\n"
+            )
+            with open(tasks_file, "w", encoding="utf-8") as f:
+                f.write(initial)
 
-    async def test():
-        adapter = ObsidianAdapter()
-        payload = KnowledgePayload(
-            title="Allineamento Trellis e Pricing PMS",
-            target_person_name="Filippo Calzavara",
-            backlinks=["Filippo Calzavara", "Trellis", "PMS Integration", "Pricing Q1"],
-            bullet_insights=[
-                "Accettato modello commissioni al 3% sui volumi aggregati",
-                "Filippo ha espresso dubbi sulla compatibilità temporale del rilascio Q1",
-                "Preferisce fissare le call sempre nella fascia mattutina (CET)",
-            ],
-            markdown_content="Abbiamo discusso l'architettura tecnica per l'aggregazione dei PMS...",
-        )
+        assignee = payload.assignee or "Davide"
+        proj_str = f" [Progetto: [[{payload.target_project}]]]" if payload.target_project else ""
+        header = f"\n### 🗓️ Task concordati il {now_str} (Rif: [[{meeting_ref}]]{proj_str})\n"
 
-        note_path = await adapter.save_meeting_note(payload)
-        dossier_path = await adapter.update_person_dossier(
-            person_name="Filippo Calzavara",
-            new_insights=payload.bullet_insights,
-            meeting_ref="Allineamento Trellis e Pricing PMS",
-        )
+        items_str = ""
+        for item in payload.task_items:
+            items_str += f"- [ ] {item.strip()} (@{assignee})\n"
 
-        print("=" * 60)
-        print("SECOND BRAIN COLLAUDATO CON SUCCESSO! 🧠")
-        print(f"Nota meeting creata in: {note_path}")
-        print(f"Dossier persona aggiornato in: {dossier_path}")
-        print("=" * 60)
+        with open(tasks_file, "a", encoding="utf-8") as f:
+            f.write(header + items_str)
 
-    asyncio.run(test())
+        return str(tasks_file)

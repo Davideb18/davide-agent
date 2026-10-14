@@ -9,6 +9,7 @@ from ...domain.models import (
     CalendarPayload,
     EmailPayload,
     KnowledgePayload,
+    TaskPayload,
 )
 from ...domain.enums import ActionStatus, ActionType, IntentCategory
 
@@ -106,6 +107,25 @@ class MockLLMExtractor:
             idempotency_key=f"idemp_know_{session_id}",
         )
 
+
+        # Azione 4: Task & Action Items Tracker
+        task_action = ProposedAction(
+            id=f"act_task_{session_id}",
+            session_id=session_id,
+            action_type=ActionType.TASK_TODO,
+            status=ActionStatus.PROPOSED,
+            task_data=TaskPayload(
+                task_items=[
+                    "Inviare schema rivisto commissioni al 3% sui volumi aggregati",
+                    "Condividere documentazione tecnica API aggregazione PMS",
+                    "Confermare slot definitivo per sync tecnico con Filippo",
+                ],
+                assignee="Davide",
+                target_project="Trellis",
+            ),
+            idempotency_key=f"idemp_task_{session_id}",
+        )
+
         return SessionExtractionResult(
             session_id=session_id,
             is_actionable=True,
@@ -116,7 +136,7 @@ class MockLLMExtractor:
                 "e ci vediamo per un sync tecnico per definire l'integrazione."
             ),
             entities=entities,
-            proposed_actions=[calendar_action, email_action, knowledge_action],
+            proposed_actions=[calendar_action, email_action, knowledge_action, task_action],
         )
 
 

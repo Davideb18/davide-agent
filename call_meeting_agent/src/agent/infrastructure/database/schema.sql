@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS proposed_actions (
     status TEXT NOT NULL,
     calendar_data_json TEXT,
     email_data_json TEXT,
+    knowledge_data_json TEXT,
+    task_data_json TEXT,
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

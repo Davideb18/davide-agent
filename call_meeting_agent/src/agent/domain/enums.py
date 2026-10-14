@@ -16,6 +16,7 @@ class ActionType(str, Enum):
     CALENDAR_EVENT = "CALENDAR_EVENT"
     EMAIL_DRAFT = "EMAIL_DRAFT"
     KNOWLEDGE_NOTE = "KNOWLEDGE_NOTE"
+    TASK_TODO = "TASK_TODO"
 
 
 class IntentCategory(str, Enum):

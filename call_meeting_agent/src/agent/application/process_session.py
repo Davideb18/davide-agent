@@ -116,25 +116,31 @@ class ProcessSessionUseCase:
             disambiguated_entities.append(self._disambiguate_entity(ent, saved_contacts))
         session_result.entities = disambiguated_entities
 
-        # 4. Fan-Out Parallelo: Valutiamo le azioni (Controllo Conflitti su Calendario)
+        # 4. Fan-Out Parallelo con asyncio.gather per massima reattività
+        calendar_actions = [
+            a for a in session_result.proposed_actions
+            if a.action_type == ActionType.CALENDAR_EVENT and a.calendar_data
+        ]
+        
+        async def evaluate_calendar(act):
+            is_busy, alternatives = await evaluate_calendar_slot(
+                self.calendar,
+                requested_start_utc=act.calendar_data.start_utc,
+                duration_minutes=30,
+            )
+            if is_busy:
+                act.status = ActionStatus.CONFLICT_DETECTED
+                act.calendar_data.alternative_slots_utc = alternatives
+            else:
+                act.status = ActionStatus.PROPOSED
+
+        if calendar_actions:
+            await asyncio.gather(*(evaluate_calendar(a) for a in calendar_actions))
+
         for action in session_result.proposed_actions:
-            if action.action_type == ActionType.CALENDAR_EVENT and action.calendar_data:
-                is_busy, alternatives = await evaluate_calendar_slot(
-                    self.calendar,
-                    requested_start_utc=action.calendar_data.start_utc,
-                    duration_minutes=30,
-                )
-                if is_busy:
-                    action.status = ActionStatus.CONFLICT_DETECTED
-                    action.calendar_data.alternative_slots_utc = alternatives
-                else:
+            if action.action_type in (ActionType.EMAIL_DRAFT, ActionType.KNOWLEDGE_NOTE, ActionType.TASK_TODO):
+                if action.status not in (ActionStatus.EXECUTED, ActionStatus.REJECTED):
                     action.status = ActionStatus.PROPOSED
-
-            elif action.action_type == ActionType.EMAIL_DRAFT:
-                action.status = ActionStatus.PROPOSED
-
-            elif action.action_type == ActionType.KNOWLEDGE_NOTE:
-                action.status = ActionStatus.PROPOSED
 
         # 5. Salvataggio nel database SQLite
         await self.repo.save_session(session_result)

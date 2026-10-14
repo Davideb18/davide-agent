@@ -20,7 +20,7 @@ class GeminiExtractorAdapter:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = "gemini-3.5-flash",
+        model_name: str = "gemini-3.8-flash",
     ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -80,6 +80,8 @@ REGOLE DI ESTRAZIONE:
 4. EMAIL: Se occorre mandare un riepilogo o materiali, genera un'azione EMAIL_DRAFT con un testo professionale e conciso.
 5. SECOND BRAIN (OBSIDIAN): Estrai le intuizioni chiave, preferenze personali emerse e decisioni in un'azione KNOWLEDGE_NOTE
    utilizzando i backlink in stile Obsidian [[NomePersona]] e [[Argomento]].
+6. TASK OPERATIVI (ACTION ITEMS): Se emergono compiti da svolgere, scadenze, To-Do o deliverable concordati a voce,
+   genera un'azione TASK_TODO popolando task_data con la lista di compiti (task_items), assignee ed eventuale target_project.
 """
 
         # Configurazione con Structured Outputs nativi (Pydantic Schema)

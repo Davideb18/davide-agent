@@ -1,6 +1,6 @@
 from typing import Protocol, List, Optional, Dict, Any
 from datetime import datetime
-from .models import SessionExtractionResult, CalendarPayload, EmailPayload, Contact, KnowledgePayload
+from .models import SessionExtractionResult, CalendarPayload, EmailPayload, Contact, KnowledgePayload, TaskPayload
 
 
 class LLMExtractorPort(Protocol):
@@ -57,6 +57,12 @@ class RepositoryPort(Protocol):
     # controlla se un'azione è già stata eseguita in precedenza per impedire invii doppi accidentali
     async def is_idempotency_key_used(self, key: str) -> bool:
         ...
+
+    async def add_contact(self, contact: Contact) -> None:
+        ...
+
+    async def delete_contact(self, contact_id: str) -> None:
+        ...
     
 class KnowledgeServicePort(Protocol):
     """Contratto per il Second Brain: salvataggio note riunione e aggiornamento profili persone."""
@@ -69,6 +75,9 @@ class KnowledgeServicePort(Protocol):
     async def update_person_dossier(
         self, person_name: str, new_insights: List[str], meeting_ref: str
     ) -> str:
+        ...
+
+    async def append_tasks(self, payload: TaskPayload, meeting_ref: str) -> str:
         ...
 
 

@@ -55,6 +55,14 @@ class KnowledgePayload(BaseModel):
 
 
 
+class TaskPayload(BaseModel):
+    """I dati per creare o aggiornare una lista di task operativi (To-Do)."""
+    task_items: List[str] = Field(default_factory=list)
+    assignee: Optional[str] = "Davide"
+    target_project: Optional[str] = None
+    deadline_utc: Optional[datetime] = None
+
+
 class ProposedAction(BaseModel):
     """Una singola azione proposta dal sistema (Calendar o Gmail) con ciclo di vita e chiave di idempotenza."""
     id: str
@@ -64,6 +72,7 @@ class ProposedAction(BaseModel):
     calendar_data: Optional[CalendarPayload] = None
     email_data: Optional[EmailPayload] = None
     knowledge_data: Optional[KnowledgePayload] = None # nota da salvare nel second brain
+    task_data: Optional[TaskPayload] = None # task operativi da tracciare
     idempotency_key: str # chiave unica per ogni azione
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

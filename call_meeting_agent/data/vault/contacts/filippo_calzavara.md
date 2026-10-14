@@ -14,3 +14,8 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent.
 - Accettato modello commissioni al 3% sui volumi aggregati
 - Filippo ha espresso dubbi sulla compatibilità temporale del rilascio Q1
 - Preferisce fissare le call sempre nella fascia mattutina (CET)
+
+### 🗓️ Interazione del 2026-10-14 (Rif: [[Allineamento Trellis e Pricing PMS]])
+- Accettato modello commissioni al 3% sui volumi aggregati
+- Filippo ha espresso dubbi sulla compatibilità temporale del rilascio Q1
+- Preferisce fissare le call sempre nella fascia mattutina (CET)

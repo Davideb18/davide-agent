@@ -22,3 +22,11 @@ env/
 # File di sistema operativo
 .DS_Store
 Thumbs.db
+
+# Google OAuth credenziali e token utente (SEGRETI)
+credentials.json
+token.json
+data/credentials.json
+data/token.json
+*.jsonl
+.pytest_cache/

@@ -25,6 +25,14 @@ class SqliteRepository:
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(schema_sql)
+            try:
+                await db.execute("ALTER TABLE proposed_actions ADD COLUMN knowledge_data_json TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE proposed_actions ADD COLUMN task_data_json TEXT")
+            except Exception:
+                pass
             await db.commit()
 
     async def seed_default_contacts(self) -> None:
@@ -83,6 +91,37 @@ class SqliteRepository:
                 """,
                 demo_contacts,
             )
+            await db.commit()
+
+    async def add_contact(self, contact: Contact) -> None:
+        """Aggiunge o aggiorna un contatto nella rubrica SQLite per il Memory Graph."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO contacts (
+                    id, first_name, last_name, email, company, role,
+                    aliases_json, tags_json, timezone, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contact.id,
+                    contact.first_name,
+                    contact.last_name,
+                    contact.email,
+                    contact.company,
+                    contact.role,
+                    json.dumps(contact.aliases),
+                    json.dumps(contact.tags),
+                    contact.timezone,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await db.commit()
+
+    async def delete_contact(self, contact_id: str) -> None:
+        """Rimuove un contatto dalla rubrica SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
             await db.commit()
 
     async def get_contacts(self) -> List[Contact]:
@@ -153,13 +192,15 @@ class SqliteRepository:
             for action in session.proposed_actions:
                 cal_json = action.calendar_data.model_dump_json() if action.calendar_data else None
                 mail_json = action.email_data.model_dump_json() if action.email_data else None
+                know_json = action.knowledge_data.model_dump_json() if action.knowledge_data else None
+                task_json = action.task_data.model_dump_json() if action.task_data else None
 
                 await db.execute(
                     """
                     INSERT OR REPLACE INTO proposed_actions (
                         id, session_id, action_type, status, calendar_data_json, email_data_json,
-                        idempotency_key, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        knowledge_data_json, task_data_json, idempotency_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         action.id,
@@ -168,6 +209,8 @@ class SqliteRepository:
                         action.status.value,
                         cal_json,
                         mail_json,
+                        know_json,
+                        task_json,
                         action.idempotency_key,
                         action.created_at.isoformat(),
                         action.updated_at.isoformat(),
@@ -221,6 +264,22 @@ class SqliteRepository:
                 (action_id, old_status, new_status, diff_json, now_iso),
             )
             await db.commit()
+
+    async def get_audit_logs(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Recupera gli ultimi eventi registrati nell'Audit Log per tracciabilità in console."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT a.id, a.action_id, p.action_type, a.old_status, a.new_status, a.diff_payload_json, a.executed_at
+                FROM audit_log a
+                LEFT JOIN proposed_actions p ON a.action_id = p.id
+                ORDER BY a.id DESC LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
     async def is_idempotency_key_used(self, key: str) -> bool:
         """Verifica se un'azione con questa chiave è già stata eseguita o approvata."""
