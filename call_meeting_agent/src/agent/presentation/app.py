@@ -43,6 +43,6 @@ try:
 except Exception as e:
     st.error(f"Si è verificato un errore durante la renderizzazione: {e}")
     if st.button("🔄 Torna alla Schermata Principale", type="primary", key="btn_global_reset"):
-        for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds"]:
+        for k in ["current_session", "audio_bytes", "audio_filename", "text_prompt", "elapsed_seconds"]:
             st.session_state[k] = None
         st.rerun()

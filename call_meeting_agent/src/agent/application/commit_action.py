@@ -5,6 +5,7 @@ from ..domain.ports import (
     CalendarServicePort,
     EmailServicePort,
     KnowledgeServicePort,
+    RemindersServicePort,
     RepositoryPort,
 )
 
@@ -18,17 +19,19 @@ class CommitActionUseCase:
         email_service: EmailServicePort,
         knowledge_service: KnowledgeServicePort,
         repository: RepositoryPort,
+        reminders_service: Optional[RemindersServicePort] = None,
     ) -> None:
         self.calendar = calendar_service
         self.email = email_service
         self.knowledge = knowledge_service
         self.repo = repository
+        self.reminders = reminders_service
 
     async def execute_action(
         self, action: ProposedAction, user_modified_payload: Optional[Dict[str, Any]] = None
     ) -> Tuple[bool, str]:
         """
-        Esegue l'azione verso l'esterno (Google Calendar, Gmail o Obsidian).
+        Esegue l'azione verso l'esterno (Google Calendar, Gmail, Obsidian o Apple Reminders).
         Ritorna:
             (success: bool, message: str)
         """
@@ -36,6 +39,9 @@ class CommitActionUseCase:
         already_used = await self.repo.is_idempotency_key_used(action.idempotency_key)
         if already_used:
             return False, f"⚠️ Azione già eseguita in precedenza! Bloccata duplicazione (Chiave: {action.idempotency_key})."
+
+        # Registrazione preventiva dell'azione nel database se creata on-demand
+        await self.repo.save_proposed_action(action)
 
         # 2. Se l'utente ha modificato i dati nella dashboard, li applichiamo
         if user_modified_payload:
@@ -45,7 +51,10 @@ class CommitActionUseCase:
                 action.email_data = EmailPayload.model_validate(user_modified_payload)
             elif action.action_type == ActionType.KNOWLEDGE_NOTE and action.knowledge_data:
                 action.knowledge_data = KnowledgePayload.model_validate(user_modified_payload)
-            elif action.action_type == ActionType.TASK_TODO and action.task_data:
+            elif (
+                action.action_type in (ActionType.TASK_TODO, ActionType.TASK_EXPORT_REMINDERS)
+                and action.task_data
+            ):
                 action.task_data = TaskPayload.model_validate(user_modified_payload)
 
         # 3. ESECUZIONE SPECIFICA PER TIPO DI AZIONE
@@ -72,12 +81,21 @@ class CommitActionUseCase:
                 if not action.knowledge_data:
                     return False, "Dati del Second Brain mancanti!"
                 note_path = await self.knowledge.save_meeting_note(action.knowledge_data)
-                await self.knowledge.update_person_dossier(
-                    person_name=action.knowledge_data.target_person_name,
-                    new_insights=action.knowledge_data.bullet_insights,
-                    meeting_ref=action.knowledge_data.title,
-                )
-                success_msg = f"Nota Second Brain creata e Dossier aggiornato! ({note_path})"
+                # Graph Linking Bidirezionale: aggiornamento atomico del dossier persona con insight e backlink
+                if action.knowledge_data.target_person_name:
+                    summary_text = action.knowledge_data.summary or (
+                        action.knowledge_data.bullet_insights[0]
+                        if action.knowledge_data.bullet_insights
+                        else ""
+                    )
+                    await self.knowledge.link_meeting_to_person(
+                        person_name=action.knowledge_data.target_person_name,
+                        meeting_title=action.knowledge_data.title,
+                        meeting_rel_path=note_path,
+                        summary=summary_text,
+                        insights=action.knowledge_data.bullet_insights,
+                    )
+                success_msg = f"Nota Second Brain creata e Dossier collegato via Graph Link! ({note_path})"
 
             elif action.action_type == ActionType.TASK_TODO:
                 if not action.task_data:
@@ -87,6 +105,19 @@ class CommitActionUseCase:
                     meeting_ref=action.task_data.target_project or "Meeting Sync"
                 )
                 success_msg = f"Checklist operativa salvata nei Task di Progetto! ({tasks_path})"
+
+            elif action.action_type == ActionType.TASK_EXPORT_REMINDERS:
+                if not action.task_data or not action.task_data.items:
+                    return False, "Nessun task specificato per l'esportazione su Promemoria!"
+                if not self.reminders:
+                    return False, "Servizio Apple Reminders non configurato o non disponibile."
+                success, msg = await self.reminders.export_tasks(
+                    task_items=action.task_data.items,
+                    list_name="Aria Tasks",
+                )
+                if not success:
+                    return False, msg
+                success_msg = msg
 
             else:
                 return False, f"Tipo di azione non supportato: {action.action_type}"

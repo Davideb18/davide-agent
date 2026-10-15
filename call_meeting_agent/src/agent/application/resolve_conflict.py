@@ -35,6 +35,11 @@ async def evaluate_calendar_slot(
     except Exception:
         tz = timezone.utc
 
+    req_utc = requested_start_utc if requested_start_utc.tzinfo else requested_start_utc.replace(tzinfo=timezone.utc)
+    req_local = req_utc.astimezone(tz)
+    is_evening_request = (req_local.hour >= 19 or req_local.hour < 8)
+    is_weekend_request = (req_local.weekday() >= 5)
+
     # 2. Conflitto rilevato! Avviamo la Sliding Window deterministica
     alternative_slots: List[datetime] = []
     current_candidate = requested_start_utc + timedelta(minutes=30)
@@ -52,14 +57,18 @@ async def evaluate_calendar_slot(
             cand_utc = current_candidate
         cand_local = cand_utc.astimezone(tz)
 
-        # Filtro orari lavorativi: esclude la notte (es. prima delle 9:00 o dopo le 18:00)
-        # e salta i weekend (sabato = 5, domenica = 6)
-        is_working_hour = (
-            working_hour_start <= cand_local.hour < working_hour_end
-            and cand_local.weekday() < 5
-        )
+        # Filtro orari contestuale: adatta a seconda della natura dell'orario richiesto
+        if is_evening_request:
+            is_valid_hour = (cand_local.hour >= 19 or cand_local.hour <= 2)
+        elif is_weekend_request:
+            is_valid_hour = (cand_local.weekday() >= 5 and 9 <= cand_local.hour <= 23)
+        else:
+            is_valid_hour = (
+                working_hour_start <= cand_local.hour < working_hour_end
+                and cand_local.weekday() < 5
+            )
 
-        if is_working_hour:
+        if is_valid_hour:
             candidate_busy = await calendar_service.check_is_busy(current_candidate, candidate_end)
             if not candidate_busy:
                 alternative_slots.append(current_candidate)

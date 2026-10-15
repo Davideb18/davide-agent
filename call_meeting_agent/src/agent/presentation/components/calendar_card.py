@@ -1,28 +1,100 @@
 """
-calendar_card.py — Vista Apple Calendar macOS Dark Mode fedele 1:1 allo screenshot.
-Design System: Apple macOS Calendar Dark Mode (Canvas #1E1E1E, Griglia Oraria, Badge Oggi Rosso, Box Attività Teal).
-100% Google Calendar Live connesso (Zero mock, zero residui di codice grezzo, selettore slot interattivo).
+calendar_card.py — Scheda Calendario Esecutiva in Stile Nativo Apple Calendar macOS.
+Filosofia: Zero frizioni, massima automazione, colori fedeli ad Apple Calendar ed eccellente leggibilità.
 """
 import html
 from datetime import datetime, timedelta, timezone, time as dt_time, date as dt_date
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict
 from zoneinfo import ZoneInfo
 import streamlit as st
 
-from src.agent.domain.enums import ActionStatus
+from src.agent.domain.enums import ActionStatus, ActionType
 from src.agent.domain.models import ProposedAction, CalendarEventItem
-from src.agent.presentation.state import run_async
+from src.agent.presentation.state import run_async, is_calendar_live
 
 WEEKDAYS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
+WEEKDAYS_SHORT_IT = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 WEEKDAYS_FULL_IT = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+MONTHS_SHORT_IT = [
+    "Gen", "Feb", "Mar", "Apr", "Mag", "Giu",
+    "Lug", "Ago", "Set", "Ott", "Nov", "Dic"
+]
 MONTHS_IT = [
     "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
     "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
 ]
 
-START_HOUR = 6
-END_HOUR = 19
-HOUR_HEIGHT = 46  # pixel per ora
+WEEKDAYS_SHORT_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+WEEKDAYS_FULL_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTHS_SHORT_EN = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+]
+MONTHS_EN = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
+
+
+def _is_english_session() -> bool:
+    """Verifica se la sessione corrente o il profilo utente è in lingua inglese."""
+    session = st.session_state.get("current_session")
+    if not session:
+        return False
+    lang = getattr(session, "detected_language", "it") or "it"
+    return str(lang).lower().startswith("en")
+
+
+def _format_slot_label(dt: datetime) -> str:
+    """Formatta un datetime nella lingua della sessione (italiano o inglese)."""
+    if _is_english_session():
+        w = WEEKDAYS_SHORT_EN[dt.weekday()]
+        m = MONTHS_SHORT_EN[dt.month - 1]
+        return f"{w} {dt.day} {m} at {dt.strftime('%H:%M')}"
+    else:
+        w = WEEKDAYS_SHORT_IT[dt.weekday()]
+        m = MONTHS_SHORT_IT[dt.month - 1]
+        return f"{w} {dt.day} {m} ore {dt.strftime('%H:%M')}"
+
+
+def _sync_calendar_change_to_email(action_id: str, new_slot_str: str) -> None:
+    """Rigenera reattivamente la bozza email solo se esplicitamente collegata a questo incontro."""
+    session = st.session_state.get("current_session")
+    if not session or not hasattr(st.session_state, "extractor") or not st.session_state.extractor:
+        return
+
+    # Rigenera ESCLUSIVAMENTE l'email collegata a questo ID di appuntamento
+    email_act = next(
+        (
+            a for a in session.proposed_actions
+            if a.action_type == ActionType.EMAIL_DRAFT and a.email_data and (
+                a.email_data.linked_calendar_action_id == action_id
+            )
+        ),
+        None,
+    )
+    if email_act and email_act.email_data:
+        try:
+            ver = st.session_state.get(f"email_ver_{email_act.id}", 0)
+            manual_body = st.session_state.get(f"body_{email_act.id}_{ver}")
+            if manual_body and manual_body.strip():
+                email_act.email_data.body_markdown = manual_body.strip()
+
+            history = getattr(session, "person_history", None)
+            with st.spinner("Riallineamento bozza email con l'orario concordato..."):
+                new_payload = run_async(
+                    st.session_state.extractor.regenerate_email_draft(
+                        original_payload=email_act.email_data,
+                        new_slot_str=new_slot_str,
+                        history=history,
+                    )
+                )
+            email_act.email_data = new_payload
+            ver_key = f"email_ver_{email_act.id}"
+            st.session_state[ver_key] = ver + 1
+            st.toast("Bozza email riallineata al nuovo orario!", icon="✉️")
+        except Exception:
+            pass
 
 
 def _get_local_tz() -> ZoneInfo:
@@ -69,191 +141,126 @@ def _fetch_calendar_events(cal_service, range_start: datetime, range_end: dateti
     return []
 
 
-def _calculate_free_slots(
+def _generate_mini_week_html(
+    display_monday: dt_date,
+    week_events: List[CalendarEventItem],
     target_date: dt_date,
-    day_events: List[CalendarEventItem],
-    duration_minutes: int = 30,
-    requested_time: Optional[dt_time] = None,
-    tz: Optional[ZoneInfo] = None,
-) -> List[Tuple[str, datetime]]:
-    """Calcola slot orari liberi durante l'orario operativo (08:30 – 18:30) con etichette compatte anti-troncamento."""
-    slots: List[Tuple[str, datetime]] = []
-    local_tz = tz or _get_local_tz()
-
-    # 1. Se fornito un orario richiesto, verifichiamo la sua disponibilità
-    if requested_time:
-        req_start_local = datetime.combine(target_date, requested_time, tzinfo=local_tz)
-        req_end_local = req_start_local + timedelta(minutes=duration_minutes)
-        collision = any(
-            req_start_local < _to_local(ev.end_utc, local_tz) and req_end_local > _to_local(ev.start_utc, local_tz)
-            for ev in day_events
-        )
-        tag = f"⚠️ {req_start_local.strftime('%H:%M')} (Occupato)" if collision else f"📍 {req_start_local.strftime('%H:%M')} (Richiesto)"
-        slots.append((tag, req_start_local))
-
-    # 2. Orari candidati tipici della giornata lavorativa
-    candidate_hours = [(8, 30), (9, 30), (10, 30), (11, 30), (14, 0), (15, 0), (16, 0), (17, 0), (18, 0)]
-    for h, m in candidate_hours:
-        c_start = datetime.combine(target_date, dt_time(h, m), tzinfo=local_tz)
-        c_end = c_start + timedelta(minutes=duration_minutes)
-        if requested_time and requested_time.hour == h and requested_time.minute == m:
-            continue
-
-        collision = any(
-            c_start < _to_local(ev.end_utc, local_tz) and c_end > _to_local(ev.start_utc, local_tz)
-            for ev in day_events
-        )
-        if not collision and len(slots) < 6:
-            slots.append((f"🟢 {c_start.strftime('%H:%M')}", c_start))
-
-    return slots
-
-
-def _generate_apple_calendar_html(
-    week_days: List[datetime],
-    events_by_day: Dict[int, List[CalendarEventItem]],
-    proposed_day_idx: int,
-    proposed_start_local: datetime,
-    proposed_end_local: datetime,
-    proposed_title: str,
-    today_local_date: dt_date,
-    current_local_time: datetime,
-    is_conflict: bool,
-    tz: Optional[ZoneInfo] = None,
+    start_local: datetime,
+    end_local: datetime,
+    title: str,
+    today_date: dt_date,
+    local_tz: ZoneInfo,
 ) -> str:
-    """Genera la tabella grafica esatta Apple Calendar Dark Mode (Zero markdown escaping issues)."""
+    """Genera la mini griglia settimanale in perfetto stile nativo Apple Calendar macOS (Sonoma/Sequoia)."""
+    min_h = 8
+    max_h = 19
+    hour_height = 26  # 26px per ora per garantire totale leggibilità di titolo e orario
+    total_h = (max_h - min_h) * hour_height
+    days = [display_monday + timedelta(days=i) for i in range(7)]
 
-    total_grid_height = (END_HOUR - START_HOUR + 1) * HOUR_HEIGHT
-    month_name = MONTHS_IT[week_days[3].month - 1]
-    year_num = week_days[3].year
-    week_range_str = f"{week_days[0].day} {MONTHS_IT[week_days[0].month - 1][:3]} – {week_days[-1].day} {MONTHS_IT[week_days[-1].month - 1][:3]}"
+    events_by_day: Dict[int, List[CalendarEventItem]] = {i: [] for i in range(7)}
+    for ev in week_events:
+        s_loc = _to_local(ev.start_utc, local_tz)
+        diff = (s_loc.date() - display_monday).days
+        if 0 <= diff < 7:
+            events_by_day[diff].append(ev)
 
     lines: List[str] = [
-        '<div class="apple-dark-canvas">',
-        '  <div class="apple-dark-topbar">',
-        f'    <div class="apple-dark-month-title"><strong>{month_name}</strong> <span class="apple-dark-year">{year_num}</span> <span style="font-size:12.5px; font-weight:400; color:#8E8E93; margin-left:6px;">({week_range_str})</span></div>',
-        '    <div class="apple-dark-nav-pills">',
-        '      <span class="apple-sync-badge">🟢 Google Live Sincronizzato</span>',
-        '    </div>',
-        '  </div>',
+        '<div style="background:#FFFFFF; border:1px solid #E5E5EA; border-radius:14px; padding:14px 16px; margin-top:10px; font-family:-apple-system,BlinkMacSystemFont,\'SF Pro Text\',sans-serif; box-shadow:0 4px 16px rgba(0,0,0,0.05);">',
+        '  <div style="display:flex; border-bottom:1px solid #E5E5EA; padding-bottom:8px; margin-bottom:6px;">',
+        '    <div style="width:46px; font-size:10px; color:#8E8E93; font-weight:700; text-align:right; padding-right:10px;">Ora</div>',
     ]
 
+    days_short = WEEKDAYS_SHORT_EN if _is_english_session() else WEEKDAYS_SHORT_IT
+    for i, d in enumerate(days):
+        is_today = (d == today_date)
+        is_target = (d == target_date)
+        d_name = days_short[i].upper()
 
-    # 2. Header colonne giorni (lun 12, mar 13, mer 14, gio 15 con cerchio rosso, ecc.)
-    lines.append('  <div class="apple-days-header-row">')
-    lines.append('    <div class="apple-time-spacer"></div>')
-    for d in week_days:
-        w_name = WEEKDAYS_IT[d.weekday()]
-        d_num = str(d.day)
-        is_today = (d.date() == today_local_date)
         if is_today:
-            lines.append(f'    <div class="apple-day-col-head"><span class="apple-day-name apple-today-text">{w_name}</span><span class="apple-today-circle">{d_num}</span></div>')
+            # Badge iconico Apple Calendar: cerchio rosso pieno
+            d_html = (
+                f'<span style="color:#FF3B30; font-weight:800; font-size:11px;">{d_name}</span> '
+                f'<span style="background:#FF3B30; color:#FFFFFF; border-radius:50%; width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:11.5px; margin-left:2px;">{d.day}</span>'
+            )
+        elif is_target:
+            # Giorno selezionato per il meeting: evidenziato in Apple Blue
+            d_html = (
+                f'<span style="color:#007AFF; font-weight:800; font-size:11px;">{d_name}</span> '
+                f'<span style="background:rgba(0,122,255,0.12); color:#007AFF; border-radius:50%; width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:11.5px; margin-left:2px;">{d.day}</span>'
+            )
         else:
-            lines.append(f'    <div class="apple-day-col-head"><span class="apple-day-name">{w_name}</span><span class="apple-day-num">{d_num}</span></div>')
+            d_html = (
+                f'<span style="color:#8E8E93; font-weight:600; font-size:11px;">{d_name}</span> '
+                f'<span style="color:#1D1D1F; font-weight:700; font-size:11.5px; margin-left:2px;">{d.day}</span>'
+            )
+
+        lines.append(f'    <div style="flex:1; text-align:center;">{d_html}</div>')
     lines.append('  </div>')
 
-    # 3. Riga "tutto il g."
-    lines.append('  <div class="apple-allday-row">')
-    lines.append('    <div class="apple-time-spacer apple-allday-label">tutto il g.</div>')
-    for _ in week_days:
-        lines.append('    <div class="apple-allday-cell"></div>')
-    lines.append('  </div>')
+    # Corpo griglia oraria in stile Apple Calendar
+    lines.append(f'  <div style="display:flex; height:{total_h}px; position:relative;">')
 
-    # 4. Griglia oraria principale
-    lines.append(f'  <div class="apple-grid-body" style="height: {total_grid_height}px;">')
-
-    # Colonna orari a sinistra
-    lines.append('    <div class="apple-time-axis">')
-    for h in range(START_HOUR, END_HOUR + 1):
-        top_px = (h - START_HOUR) * HOUR_HEIGHT
-        time_lbl = f"{h:02d}:00"
-        lines.append(f'      <div class="apple-hour-label" style="top: {top_px - 8}px;">{time_lbl}</div>')
-
-    # Badge rosso dell'ora corrente sull'asse
-    curr_hour_frac = (current_local_time.hour - START_HOUR) + (current_local_time.minute / 60.0)
-    if 0 <= curr_hour_frac <= (END_HOUR - START_HOUR + 1):
-        curr_y = int(curr_hour_frac * HOUR_HEIGHT)
-        curr_hm_str = current_local_time.strftime("%H:%M")
-        lines.append(f'      <div class="apple-current-time-badge" style="top: {curr_y - 9}px;">{curr_hm_str}</div>')
+    # Asse orari a sinistra
+    lines.append('    <div style="width:46px; position:relative; border-right:1px solid #E5E5EA;">')
+    for h in range(min_h, max_h + 1):
+        y = (h - min_h) * hour_height
+        lines.append(f'      <div style="position:absolute; top:{y-7}px; right:10px; font-size:9.5px; color:#8E8E93; font-family:-apple-system,monospace; font-weight:500;">{h:02d}:00</div>')
     lines.append('    </div>')
 
     # Colonne dei 7 giorni
-    lines.append('    <div class="apple-columns-container">')
+    lines.append('    <div style="flex:1; display:flex; position:relative;">')
 
-    # Linee orizzontali orarie di sfondo
-    for h in range(START_HOUR, END_HOUR + 1):
-        top_px = (h - START_HOUR) * HOUR_HEIGHT
-        lines.append(f'      <div class="apple-hour-gridline" style="top: {top_px}px;"></div>')
+    # Linee orizzontali di riferimento
+    for h in range(min_h, max_h + 1):
+        y = (h - min_h) * hour_height
+        lines.append(f'      <div style="position:absolute; left:0; right:0; top:{y}px; height:1px; background:#F2F2F7; pointer-events:none;"></div>')
 
-    # Linea rossa orizzontale che attraversa tutte le colonne all'orario attuale
-    if 0 <= curr_hour_frac <= (END_HOUR - START_HOUR + 1):
-        curr_y = int(curr_hour_frac * HOUR_HEIGHT)
-        lines.append(f'      <div class="apple-current-timeline-full" style="top: {curr_y}px;"></div>')
+    for day_idx, d in enumerate(days):
+        col_bg = "background:rgba(0,122,255,0.04);" if d == target_date else ""
+        lines.append(f'      <div style="flex:1; position:relative; border-right:1px solid #E5E5EA; {col_bg}">')
 
-    # Colonne per ogni giorno della settimana
-    for day_idx, d in enumerate(week_days):
-        is_today = (d.date() == today_local_date)
-        lines.append(f'      <div class="apple-day-column" style="left: {day_idx * 14.2857}%; width: 14.2857%;">')
-
-        # Punto rosso indicatore all'incrocio per oggi
-        if is_today and 0 <= curr_hour_frac <= (END_HOUR - START_HOUR + 1):
-            curr_y = int(curr_hour_frac * HOUR_HEIGHT)
-            lines.append(f'        <div class="apple-current-dot" style="top: {curr_y - 4}px;"></div>')
-
-        # Eventi reali del calendario per questo giorno
-        day_events = events_by_day.get(day_idx, [])
-        for ev in day_events:
-            ev_start_l = _to_local(ev.start_utc, tz)
-            ev_end_l = _to_local(ev.end_utc, tz)
-            start_frac = (ev_start_l.hour - START_HOUR) + (ev_start_l.minute / 60.0)
-            dur_hours = (ev_end_l - ev_start_l).total_seconds() / 3600.0
-
-            if start_frac + dur_hours < 0 or start_frac > (END_HOUR - START_HOUR + 1):
+        # Impegni reali Google Calendar (Stile Card Apple Calendar)
+        for ev in events_by_day.get(day_idx, []):
+            ev_s = _to_local(ev.start_utc, local_tz)
+            ev_e = _to_local(ev.end_utc, local_tz)
+            s_frac = (ev_s.hour - min_h) + ev_s.minute / 60.0
+            dur = (ev_e - ev_s).total_seconds() / 3600.0
+            if s_frac + dur <= 0 or s_frac >= (max_h - min_h):
                 continue
-
-            top_px = max(0, int(start_frac * HOUR_HEIGHT))
-            height_px = max(34, int(dur_hours * HOUR_HEIGHT) - 2)
-            time_str = f"{ev_start_l.strftime('%H:%M')} – {ev_end_l.strftime('%H:%M')}"
+            top_px = max(0, int(s_frac * hour_height))
+            h_px = max(22, int(dur * hour_height) - 2)
             safe_title = html.escape(ev.title)
-
             lines.append(
-                f'        <div class="apple-event-teal" style="top: {top_px}px; height: {height_px}px;" title="{safe_title} ({time_str})">'
-                f'          <div class="apple-event-teal-title">{safe_title}</div>'
-                f'          <div class="apple-event-teal-time">🕒 {time_str}</div>'
+                f'        <div style="position:absolute; left:2px; right:2px; top:{top_px}px; height:{h_px}px; background:#EFF6FF; border-left:3.5px solid #2563EB; border-radius:5px; padding:2px 5px; overflow:hidden; z-index:1; box-shadow:0 1px 3px rgba(0,0,0,0.06);" title="{safe_title} ({ev_s.strftime("%H:%M")} – {ev_e.strftime("%H:%M")})">'
+                f'          <div style="font-weight:700; font-size:10px; color:#1E40AF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">{safe_title}</div>'
+                f'          <div style="font-size:8.5px; color:#3B82F6; font-weight:600; line-height:1.1;">🕒 {ev_s.strftime("%H:%M")}</div>'
                 f'        </div>'
             )
 
-        # Evento proposto / selezionato (Evidenziato)
-        if day_idx == proposed_day_idx:
-            p_start_frac = (proposed_start_local.hour - START_HOUR) + (proposed_start_local.minute / 60.0)
-            p_dur_hours = (proposed_end_local - proposed_start_local).total_seconds() / 3600.0
-            p_top_px = max(0, int(p_start_frac * HOUR_HEIGHT))
-            p_height_px = max(36, int(p_dur_hours * HOUR_HEIGHT) - 2)
-            p_time_str = f"{proposed_start_local.strftime('%H:%M')} – {proposed_end_local.strftime('%H:%M')}"
-            p_safe_title = html.escape(proposed_title)
-            card_class = "apple-event-proposed-conflict" if is_conflict else "apple-event-proposed"
-            badge_text = "⚠️ CONFLITTO" if is_conflict else "📍 PROPOSTA"
-
+        # Box Nuovo Appuntamento Proposto (Apple Blue vibrante con ombra morbida)
+        if d == target_date:
+            p_s_frac = (start_local.hour - min_h) + start_local.minute / 60.0
+            p_dur = (end_local - start_local).total_seconds() / 3600.0
+            p_top_px = max(0, int(p_s_frac * hour_height))
+            p_h_px = max(26, int(p_dur * hour_height) - 2)
+            safe_t = html.escape(title or "Nuovo Appuntamento")
             lines.append(
-                f'        <div class="{card_class}" style="top: {p_top_px}px; height: {p_height_px}px;" title="Nuovo Appuntamento: {p_safe_title} ({p_time_str})">'
-                f'          <div class="apple-event-proposed-badge">{badge_text}</div>'
-                f'          <div class="apple-event-proposed-title">{p_safe_title}</div>'
-                f'          <div class="apple-event-proposed-time">🕒 {p_time_str}</div>'
+                f'        <div style="position:absolute; left:2px; right:2px; top:{p_top_px}px; height:{p_h_px}px; background:#007AFF; border-left:3.5px solid #0051B3; border-radius:6px; padding:2px 6px; overflow:hidden; z-index:3; box-shadow:0 3px 10px rgba(0,122,255,0.35);" title="Nuovo: {safe_t} ({start_local.strftime("%H:%M")})">'
+                f'          <div style="font-weight:800; font-size:10.5px; color:#FFFFFF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">📍 {safe_t}</div>'
+                f'          <div style="font-size:9px; color:#E0F2FE; font-weight:700; line-height:1.1;">🕒 {start_local.strftime("%H:%M")} – {end_local.strftime("%H:%M")}</div>'
                 f'        </div>'
             )
-
         lines.append('      </div>')
 
     lines.append('    </div>')
     lines.append('  </div>')
     lines.append('</div>')
-
-    # Compattazione senza indentazioni per azzerare qualunque parsing code block
     return "".join(line.strip() for line in lines)
 
 
 def render_calendar_card(action: ProposedAction, committer):
-    """Renderizza l'interfaccia Apple Calendar Dark Mode 1:1 con navigazione per settimane e selettore completo."""
+    """Renderizza la card appuntamento con banner conflitto extra spesso ed estetica Apple Calendar."""
     data = action.calendar_data
     if not data:
         return
@@ -272,310 +279,289 @@ def render_calendar_card(action: ProposedAction, committer):
         except Exception:
             pass
 
-    # Recupero fuso orario dinamico
     local_tz = _get_local_tz()
     tz_name = st.session_state.get("user_timezone", "Europe/Rome")
     now_local = datetime.now(local_tz)
     today_local_date = now_local.date()
 
-    # Coordinate temporali dell'evento proposto
-    proposed_start_local = _to_local(data.start_utc, local_tz)
-    proposed_end_local = _to_local(data.end_utc, local_tz)
-    duration = data.end_utc - data.start_utc
-    duration_min = int(duration.total_seconds() / 60) if duration.total_seconds() > 0 else 30
+    # Orari locali dell'evento
+    start_local = _to_local(data.start_utc, local_tz)
+    end_local = _to_local(data.end_utc, local_tz)
+    duration_min = max(15, int((data.end_utc - data.start_utc).total_seconds() / 60))
 
-    # Gestione navigazione settimane: offset salvato in session_state
-    week_offset_key = f"cal_week_offset_{action.id}"
+    is_en = _is_english_session()
+    target_date = start_local.date()
+    weekday_str = WEEKDAYS_FULL_EN[target_date.weekday()] if is_en else WEEKDAYS_FULL_IT[target_date.weekday()]
+    month_str = MONTHS_EN[target_date.month - 1] if is_en else MONTHS_IT[target_date.month - 1]
+
+    # Gestione navigazione settimane per la mini anteprima
+    week_offset_key = f"mini_cal_offset_{action.id}"
     if week_offset_key not in st.session_state:
         st.session_state[week_offset_key] = 0
 
     week_offset = st.session_state[week_offset_key]
+    meeting_monday = target_date - timedelta(days=target_date.weekday())
+    display_monday = meeting_monday + timedelta(weeks=week_offset)
+    display_sunday = display_monday + timedelta(days=6)
 
-    # Settimana base della proposta e settimana visualizzata a schermo
-    meeting_day = proposed_start_local.date()
-    base_monday = meeting_day - timedelta(days=meeting_day.weekday())
-    display_monday = base_monday + timedelta(weeks=week_offset)
+    # Recupero eventi reali per la settimana visualizzata nella mini anteprima
+    w_start_utc = datetime(display_monday.year, display_monday.month, display_monday.day, 0, 0, 0, tzinfo=local_tz).astimezone(timezone.utc)
+    w_end_utc = datetime(display_sunday.year, display_sunday.month, display_sunday.day, 23, 59, 59, tzinfo=local_tz).astimezone(timezone.utc)
+    week_events: List[CalendarEventItem] = _fetch_calendar_events(cal_service, w_start_utc, w_end_utc)
 
-    week_days = [
-        datetime(display_monday.year, display_monday.month, display_monday.day, tzinfo=timezone.utc) + timedelta(days=i)
-        for i in range(7)
-    ]
-    range_start = week_days[0]
-    range_end = week_days[-1] + timedelta(hours=23, minutes=59, seconds=59)
+    # Verifica collisione effettiva sull'evento proposto
+    is_conflict = False
+    conflict_title = ""
+    for ev in week_events:
+        if data.start_utc < ev.end_utc and data.end_utc > ev.start_utc:
+            is_conflict = True
+            conflict_title = ev.title
+            break
 
-    # Recupero impegni reali da Google Calendar per la settimana visualizzata
-    raw_events: List[CalendarEventItem] = _fetch_calendar_events(cal_service, range_start, range_end)
-
-    # Mappatura eventi per giorno della settimana visualizzata (0 = Lunedì, 6 = Domenica)
-    events_by_day: Dict[int, List[CalendarEventItem]] = {i: [] for i in range(7)}
-    for ev in raw_events:
-        r_dt = _to_local(ev.start_utc, local_tz)
-        day_diff = (r_dt.date() - display_monday).days
-        if 0 <= day_diff < 7:
-            events_by_day[day_diff].append(ev)
-
-    # Badge connettività servizio
-    from src.agent.presentation.state import is_calendar_live
-    is_live = is_calendar_live()
+    live_connected = is_calendar_live()
     sync_badge = (
-        "<span class='apple-sync-badge'>🟢 Google Live Connesso</span>"
-        if is_live else
-        "<span class='aria-pill aria-pill-amber' style='font-size:10.5px;'>🟡 Calendario Locale</span>"
+        f"<span class='aria-pill aria-pill-green' style='font-size:11px; font-weight:700;'>🟢 {'Google Live Connected' if is_en else 'Google Live Connesso'}</span>"
+        if live_connected else
+        f"<span class='aria-pill aria-pill-amber' style='font-size:11px; font-weight:700;'>🟡 {'Local Calendar' if is_en else 'Calendario Locale'}</span>"
     )
 
-    # ── HEADER & NAVIGAZIONE SETTIMANA APPLE CALENDAR ────────────────────────
-    with st.container():
-        c_head, c_badge = st.columns([3, 1])
-        with c_head:
-            st.markdown(
-                f"<h3 style='font-size:20px; font-weight:700; color:#1A1A1E; margin:0 0 2px 0; letter-spacing:-0.025em;'>"
-                f"  📅 Apple Calendar — {data.title}"
-                f"</h3>"
-                f"<p style='font-size:12.5px; color:#55555A; margin:0 0 8px 0;'>"
-                f"  Navigazione agenda macOS in tempo reale • Fuso: <b>{tz_name}</b>"
-                f"</p>",
-                unsafe_allow_html=True,
-            )
-        with c_badge:
-            st.markdown(f"<div style='text-align:right;'>{sync_badge}</div>", unsafe_allow_html=True)
-
-        # ── CONTROLLI NAVIGAZIONE SETTIMANALE ────────────────────────────────
-        col_nav_prev, col_nav_today, col_nav_next, col_nav_label = st.columns([1, 0.9, 1.1, 3.2])
-        with col_nav_prev:
-            if st.button("‹ Prec.", key=f"btn_prev_week_{action.id}", use_container_width=True):
-                st.session_state[week_offset_key] = week_offset - 1
-                st.rerun()
-        with col_nav_today:
-            is_viewing_today_week = (display_monday <= today_local_date <= display_monday + timedelta(days=6))
-            if st.button("Oggi", key=f"btn_today_week_{action.id}", type="primary" if not is_viewing_today_week else "secondary", use_container_width=True):
-                today_monday = today_local_date - timedelta(days=today_local_date.weekday())
-                st.session_state[week_offset_key] = (today_monday - base_monday).days // 7
-                st.rerun()
-        with col_nav_next:
-            if st.button("Succ. ›", key=f"btn_next_week_{action.id}", use_container_width=True):
-                st.session_state[week_offset_key] = week_offset + 1
-                st.rerun()
-        with col_nav_label:
-            disp_end = display_monday + timedelta(days=6)
-            st.markdown(
-                f"<div style='padding-top:7px; font-size:13px; font-weight:600; color:#1A1A1E;'>"
-                f"  🗓️ Settimana: {display_monday.day} {MONTHS_IT[display_monday.month-1][:3]} – {disp_end.day} {MONTHS_IT[disp_end.month-1][:3]} {display_monday.year}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-
-        # ── 1. SELETTORE GIORNO DELLA SETTIMANA VISUALIZZATA ─────────────────
+    with st.container(border=True):
+        # 1. Testata della scheda
+        header_title = "📅 Calendar Appointment" if is_en else "📅 Appuntamento in Agenda"
         st.markdown(
-            "<span style='font-size:12px; font-weight:700; color:#444449; text-transform:uppercase; letter-spacing:0.04em;'>"
-            "1. Scegli Giorno della Settimana:</span>",
+            f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="font-size:19px; font-weight:800; color:#1D1D1F; margin:0; letter-spacing:-0.02em;">
+                    {header_title}
+                </h3>
+                {sync_badge}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-        day_labels = []
-        for i, wd in enumerate(week_days):
-            d_local = _to_local(wd, local_tz)
-            lbl = f"{WEEKDAYS_IT[i].capitalize()} {d_local.day} {MONTHS_IT[d_local.month-1][:3]}"
-            if d_local.date() == today_local_date:
-                lbl = f"⭐ {lbl} (Oggi)"
-            day_labels.append(lbl)
-
-        # Se l'appuntamento cade nella settimana visualizzata, imposta quel giorno come default
-        active_day_idx = (proposed_start_local.date() - display_monday).days
-        if not (0 <= active_day_idx < 7):
-            active_day_idx = 0
-
-        selected_day_label = st.pills(
-            "Seleziona giorno:",
-            options=day_labels,
-            default=day_labels[active_day_idx],
-            key=f"cal_day_pills_{action.id}_{week_offset}",
-            label_visibility="collapsed",
-        )
-
-        chosen_day_idx = day_labels.index(selected_day_label) if selected_day_label in day_labels else active_day_idx
-        target_day_date = display_monday + timedelta(days=chosen_day_idx)
-
-        # ── 2. SELETTORE SLOT CONSIGLIATI (ANTI-TRONCAMENTO) ─────────────────
-        st.markdown(
-            "<div style='margin-top:8px;'><span style='font-size:12px; font-weight:700; color:#444449; text-transform:uppercase; letter-spacing:0.04em;'>"
-            "2. Orari e Slot Consigliati (Verifica Conflitti Live):</span></div>",
-            unsafe_allow_html=True,
-        )
-
-        target_day_events = events_by_day.get(chosen_day_idx, [])
-        free_slots_data = _calculate_free_slots(
-            target_date=target_day_date,
-            day_events=target_day_events,
-            duration_minutes=duration_min,
-            requested_time=dt_time(proposed_start_local.hour, proposed_start_local.minute) if proposed_start_local.date() == target_day_date else None,
-            tz=local_tz,
-        )
-
-        slot_label_to_dt = {label: dt for label, dt in free_slots_data}
-        slot_options = list(slot_label_to_dt.keys())
-
-        if slot_options:
-            default_slot_idx = 0
-            for idx, (_, dt_val) in enumerate(free_slots_data):
-                if dt_val.hour == proposed_start_local.hour and dt_val.minute == proposed_start_local.minute and target_day_date == proposed_start_local.date():
-                    default_slot_idx = idx
-                    break
-
-            chosen_slot_label = st.pills(
-                "Seleziona orario slot:",
-                options=slot_options,
-                default=slot_options[default_slot_idx],
-                key=f"cal_slot_pills_{action.id}_{chosen_day_idx}_{week_offset}",
-                label_visibility="collapsed",
-            )
-
-            if chosen_slot_label and chosen_slot_label in slot_label_to_dt:
-                new_start_dt = slot_label_to_dt[chosen_slot_label]
-                new_start_utc = new_start_dt.astimezone(timezone.utc)
-                if new_start_utc != data.start_utc:
-                    data.start_utc = new_start_utc
-                    data.end_utc = data.start_utc + timedelta(minutes=duration_min)
-
-        # ── 3. PERSONALIZZAZIONE TOTALE LIBERA (QUALSIASI DATA, ORA, DURATA) ──
-        with st.expander("⚙️ Personalizza Data, Orario & Durata (Sposta Liberamente)", expanded=False):
-            st.markdown(
-                "<p style='font-size:12px; color:#55555A; margin:0 0 10px 0;'>"
-                "Sposta liberamente l'appuntamento a qualsiasi data e orario futuro. Il calendario si sincronizzerà all'istante."
-                "</p>",
-                unsafe_allow_html=True,
-            )
-            col_cust_d, col_cust_t, col_cust_dur = st.columns([1.2, 1, 1.2])
-            with col_cust_d:
-                picked_date = st.date_input(
-                    "📅 Data appuntamento:",
-                    value=proposed_start_local.date(),
-                    key=f"cust_date_{action.id}",
-                )
-            with col_cust_t:
-                picked_time = st.time_input(
-                    f"🕒 Inizio ({tz_name}):",
-                    value=dt_time(proposed_start_local.hour, proposed_start_local.minute),
-                    key=f"cust_time_{action.id}",
-                )
-            with col_cust_dur:
-                duration_options = [15, 30, 45, 60, 90, 120]
-                def _fmt_dur(d):
-                    if d < 60:
-                        return f"{d} minuti"
-                    elif d == 60:
-                        return "1 ora"
-                    elif d == 90:
-                        return "1h 30m"
-                    else:
-                        return f"{d // 60} ore"
-                dur_idx = duration_options.index(duration_min) if duration_min in duration_options else 1
-                picked_duration = st.selectbox(
-                    "⏱️ Durata incontro:",
-                    options=duration_options,
-                    index=dur_idx,
-                    format_func=_fmt_dur,
-                    key=f"cust_dur_{action.id}",
-                )
-
-            data.title = st.text_input(
-                "🏷️ Titolo appuntamento:",
-                value=data.title,
-                key=f"cust_title_{action.id}",
-            )
-
-            new_custom_start_local = datetime.combine(picked_date, picked_time, tzinfo=local_tz)
-            new_custom_end_local = new_custom_start_local + timedelta(minutes=picked_duration)
-            new_custom_start_utc = new_custom_start_local.astimezone(timezone.utc)
-            new_custom_end_utc = new_custom_end_local.astimezone(timezone.utc)
-
-            if new_custom_start_utc != data.start_utc or new_custom_end_utc != data.end_utc:
-                data.start_utc = new_custom_start_utc
-                data.end_utc = new_custom_end_utc
-                # Se la nuova data cade in un'altra settimana, naviga automaticamente a quella settimana
-                new_monday = picked_date - timedelta(days=picked_date.weekday())
-                st.session_state[week_offset_key] = (new_monday - base_monday).days // 7
-                st.rerun()
-
-        # Ricalcolo coordinate definitive dell'evento proposto
-        proposed_start_local = _to_local(data.start_utc, local_tz)
-        proposed_end_local = _to_local(data.end_utc, local_tz)
-        proposed_day_idx = (proposed_start_local.date() - display_monday).days
-
-        # Verifica collisione effettiva contro gli impegni Google Calendar
-        is_conflict = False
-        conflict_event_title = ""
-        for ev in raw_events:
-            if data.start_utc < ev.end_utc and data.end_utc > ev.start_utc:
-                is_conflict = True
-                conflict_event_title = ev.title
-                break
-
-        # Banner informativo dinamico stato slot
+        # 2. BANNER DI STATO DISPONIBILITÀ: Extra spesso, grosso e con altissimo contrasto visivo
         if is_conflict:
-            st.markdown(
-                f"<div style='background:#FFFBEB; border:1px solid #FCD34D; border-radius:10px; padding:10px 14px; margin: 8px 0 14px 0;'>"
-                f"  <span style='color:#B45309; font-weight:700; font-size:13px;'>⚠️ Sovrapposizione Orario Rilevata</span>"
-                f"  <p style='color:#92400E; font-size:12px; margin:2px 0 0 0;'>"
-                f"    L'orario scelto ({proposed_start_local.strftime('%H:%M')}) si sovrappone a <b>{html.escape(conflict_event_title)}</b>. "
-                f"    Seleziona uno slot con bollino verde o modifica l'orario nel pannello personalizzazione."
+            warn_title = "Attention: Overlapping Event Detected!" if is_en else "Attenzione: Sovrapposizione Orario Rilevata!"
+            warn_msg = (
+                f"At <b>{start_local.strftime('%H:%M')}</b> you already have: <b style='text-decoration:underline;'>{html.escape(conflict_title)}</b>."
+                if is_en else
+                f"Alle ore <b>{start_local.strftime('%H:%M')}</b> hai già in calendario: <b style='text-decoration:underline;'>{html.escape(conflict_title)}</b>."
+            )
+            warn_sub = "👇 Click a recommended free slot to apply it immediately:" if is_en else "👇 Clicca su uno slot libero consigliato per applicarlo all'istante:"
+            status_html = (
+                f"<div style='background:#FEF2F2; border:3.5px solid #EF4444; border-radius:14px; padding:16px 20px; margin-bottom:16px; box-shadow:0 4px 14px rgba(239,68,68,0.15);'>"
+                f"  <div style='display:flex; align-items:center; gap:10px; margin-bottom:6px;'>"
+                f"    <span style='font-size:24px; line-height:1;'>⚠️</span>"
+                f"    <span style='font-size:17px; font-weight:800; color:#991B1B; text-transform:uppercase; letter-spacing:0.02em;'>"
+                f"      {warn_title}"
+                f"    </span>"
+                f"  </div>"
+                f"  <p style='color:#B91C1C; font-size:14.5px; font-weight:600; margin:0 0 10px 0; line-height:1.45;'>"
+                f"    {warn_msg}"
                 f"  </p>"
-                f"</div>",
-                unsafe_allow_html=True,
+                f"  <div style='font-size:12.5px; font-weight:700; color:#7F1D1D;'>"
+                f"    {warn_sub}"
+                f"  </div>"
+                f"</div>"
             )
+            st.markdown(status_html, unsafe_allow_html=True)
+
+            if data.alternative_slots_utc and action.status != ActionStatus.EXECUTED:
+                alt_cols = st.columns(min(len(data.alternative_slots_utc), 3))
+                for idx, alt_utc in enumerate(data.alternative_slots_utc[:3]):
+                    alt_loc = _to_local(alt_utc, local_tz)
+                    btn_lbl = _format_slot_label(alt_loc)
+                    with alt_cols[idx]:
+                        if st.button(f"👉 {btn_lbl}", key=f"btn_alt_slot_{action.id}_{idx}", use_container_width=True):
+                            data.start_utc = alt_utc
+                            data.end_utc = alt_utc + timedelta(minutes=duration_min)
+                            alt_mon = alt_loc.date() - timedelta(days=alt_loc.date().weekday())
+                            st.session_state[week_offset_key] = (alt_mon - meeting_monday).days // 7
+                            new_slot_text = (
+                                f"{WEEKDAYS_FULL_EN[alt_loc.weekday()]} {alt_loc.day} {MONTHS_EN[alt_loc.month-1]} at {alt_loc.strftime('%H:%M')}"
+                                if is_en else
+                                f"{WEEKDAYS_FULL_IT[alt_loc.weekday()]} {alt_loc.day} {MONTHS_IT[alt_loc.month-1]} ore {alt_loc.strftime('%H:%M')}"
+                            )
+                            _sync_calendar_change_to_email(action.id, new_slot_text)
+                            st.rerun()
+                st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         else:
-            in_view_note = ""
-            if not (0 <= proposed_day_idx < 7):
-                in_view_note = f" <i>(Fissato per {WEEKDAYS_FULL_IT[proposed_start_local.weekday()]} {proposed_start_local.day} {MONTHS_IT[proposed_start_local.month-1]} — usa le frecce per visualizzarlo)</i>"
+            ok_title = "Time Slot Available in Calendar" if is_en else "Orario Disponibile in Agenda"
+            ok_msg = (
+                f"No conflicts detected. The slot <b>{weekday_str} {target_date.day} {month_str} at {start_local.strftime('%H:%M')} – {end_local.strftime('%H:%M')}</b> is free on Google Calendar!"
+                if is_en else
+                f"Nessun conflitto rilevato. Lo slot <b>{weekday_str} {target_date.day} {month_str} ore {start_local.strftime('%H:%M')} – {end_local.strftime('%H:%M')}</b> è libero su Google Calendar!"
+            )
+            status_html = (
+                f"<div style='background:#F0FDF4; border:3.5px solid #22C55E; border-radius:14px; padding:15px 20px; margin-bottom:16px; box-shadow:0 4px 14px rgba(34,197,94,0.12);'>"
+                f"  <div style='display:flex; align-items:center; gap:10px;'>"
+                f"    <span style='font-size:24px; color:#16A34A; line-height:1;'>✓</span>"
+                f"    <div>"
+                f"      <div style='font-size:17px; font-weight:800; color:#166534; text-transform:uppercase; letter-spacing:0.02em;'>"
+                f"        {ok_title}"
+                f"      </div>"
+                f"      <p style='color:#15803D; font-size:14px; font-weight:600; margin:2px 0 0 0;'>"
+                f"        {ok_msg}"
+                f"      </p>"
+                f"    </div>"
+                f"  </div>"
+                f"</div>"
+            )
+            st.markdown(status_html, unsafe_allow_html=True)
+
+        # 3. Dettagli Appuntamento e Modifica Rapida (Nessun doppio box ridondante)
+        col_summary, col_edit = st.columns([1.5, 1.5], gap="large")
+
+        with col_summary:
+            summary_lbl = "Event Summary" if is_en else "Riepilogo Evento"
+            time_lbl = f"🕒 {start_local.strftime('%H:%M')} – {end_local.strftime('%H:%M')}"
             st.markdown(
-                f"<div style='background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:8px 14px; margin: 8px 0 14px 0;'>"
-                f"  <span style='color:#15803D; font-weight:600; font-size:12.5px;'>"
-                f"    ✓ Posizione confermata in agenda: <b>{WEEKDAYS_FULL_IT[proposed_start_local.weekday()]} {proposed_start_local.day} {MONTHS_IT[proposed_start_local.month-1]}</b> ore <b>{proposed_start_local.strftime('%H:%M')} – {proposed_end_local.strftime('%H:%M')}</b> ({tz_name}){in_view_note}"
-                f"  </span>"
-                f"</div>",
+                f"""
+                <div style="padding: 4px 2px;">
+                    <div style="font-size:11px; font-weight:700; color:#8E8E93; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">
+                        {summary_lbl}
+                    </div>
+                    <div style="font-size:20px; font-weight:800; color:#1D1D1F; margin-bottom:8px; line-height:1.25;">
+                        {html.escape(data.title)}
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px; font-size:14.5px; font-weight:700; color:#007AFF; margin-bottom:10px;">
+                        <span>🗓️ {weekday_str} {target_date.day} {month_str} {target_date.year}</span>
+                        <span>•</span>
+                        <span>{time_lbl}</span>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <span class="aria-pill aria-pill-blue" style="font-size:11.5px; font-weight:600;">⏱️ {duration_min} min</span>
+                        <span class="aria-pill aria-pill-purple" style="font-size:11.5px; font-weight:600;">🌍 {tz_name}</span>
+                    </div>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
 
-    # ── GENERAZIONE E RENDER DEL CALENDARIO APPLE DARK MODE ──────────────────
-    apple_cal_html = _generate_apple_calendar_html(
-        week_days=week_days,
-        events_by_day=events_by_day,
-        proposed_day_idx=proposed_day_idx,
-        proposed_start_local=proposed_start_local,
-        proposed_end_local=proposed_end_local,
-        proposed_title=data.title,
-        today_local_date=today_local_date,
-        current_local_time=now_local,
-        is_conflict=is_conflict,
-        tz=local_tz,
-    )
+        with col_edit:
+            is_exec = (action.status == ActionStatus.EXECUTED)
+            adjust_lbl = "Quick Adjust" if is_en else "Regola Rapidamente"
+            st.markdown(
+                f"<div style='font-size:11px; font-weight:700; color:#8E8E93; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;'>"
+                f"{adjust_lbl}</div>",
+                unsafe_allow_html=True,
+            )
 
-    st.markdown(apple_cal_html, unsafe_allow_html=True)
+            # Titolo modificabile inline
+            title_input_lbl = "Meeting title:" if is_en else "Titolo incontro:"
+            data.title = st.text_input(
+                title_input_lbl,
+                value=data.title,
+                key=f"cal_title_{action.id}",
+                disabled=is_exec,
+            )
 
-    # ── BOTTONI DI CONFERMA / RIFIUTO ────────────────────────────────────────
-    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-    if action.status != ActionStatus.EXECUTED:
-        c_btn, c_rej = st.columns([3, 1])
-        with c_btn:
-            btn_label = f"📅  Inserisci in Google Calendar ({WEEKDAYS_FULL_IT[proposed_start_local.weekday()]} ore {proposed_start_local.strftime('%H:%M')} {tz_name})"
-            if st.button(btn_label, key=f"btn_cal_commit_{action.id}", type="primary", use_container_width=True):
-                ok, msg = run_async(committer.execute_action(action, user_modified_payload=data.model_dump(mode="json")))
-                if ok:
-                    st.toast(msg, icon="📅")
-                    st.rerun()
-        with c_rej:
-            if st.button("Rifiuta", key=f"btn_cal_rej_{action.id}", type="secondary", use_container_width=True):
-                run_async(committer.reject_action(action))
+            # Data e Ora affiancati (Massima fluidità: nessuna chiamata LLM bloccante)
+            c_d, c_t = st.columns([1.2, 1])
+            with c_d:
+                date_input_lbl = "Date:" if is_en else "Data:"
+                new_date = st.date_input(
+                    date_input_lbl,
+                    value=target_date,
+                    key=f"cal_date_{action.id}",
+                    disabled=is_exec,
+                )
+            with c_t:
+                time_input_lbl = f"Time ({tz_name}):" if is_en else f"Ora ({tz_name}):"
+                new_time = st.time_input(
+                    time_input_lbl,
+                    value=dt_time(start_local.hour, start_local.minute),
+                    key=f"cal_time_{action.id}",
+                    disabled=is_exec,
+                )
+
+            # Sincronizzazione immediata e fluida su cambio data/ora
+            new_start_local = datetime.combine(new_date, new_time, tzinfo=local_tz)
+            new_start_utc = new_start_local.astimezone(timezone.utc)
+            if new_start_utc != data.start_utc:
+                data.start_utc = new_start_utc
+                data.end_utc = data.start_utc + timedelta(minutes=duration_min)
+                new_monday = new_date - timedelta(days=new_date.weekday())
+                st.session_state[week_offset_key] = (new_monday - meeting_monday).days // 7
                 st.rerun()
-    else:
-        st.markdown(
-            f"<div style='background:#F0FDF4; border:1px solid #BBF7D0; border-radius:12px; padding:16px 20px; text-align:center; box-shadow:0 1px 4px rgba(0,0,0,0.03); margin-top:8px; margin-bottom:18px;'>"
-            f"  <span style='color:#15803D; font-weight:700; font-size:13.5px;'>✓ Confermato e programmato in Google Calendar per {WEEKDAYS_FULL_IT[proposed_start_local.weekday()]} {proposed_start_local.day} {MONTHS_IT[proposed_start_local.month-1]} alle {proposed_start_local.strftime('%H:%M')} ({tz_name})</span>"
-            f"</div>",
-            unsafe_allow_html=True,
+
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+            # Pulsanti di Azione
+            if not is_exec:
+                c_btn, c_rej = st.columns([2.5, 1])
+                with c_btn:
+                    btn_text = "📅 Add to Google Calendar" if is_en else "📅 Inserisci in Google Calendar"
+                    if st.button(btn_text, key=f"btn_cal_commit_{action.id}", type="primary", use_container_width=True):
+                        ok, msg = run_async(committer.execute_action(action, user_modified_payload=data.model_dump(mode="json")))
+                        if ok:
+                            st.toast(msg, icon="📅")
+                            st.rerun()
+                with c_rej:
+                    rej_text = "Discard" if is_en else "Scarta"
+                    if st.button(rej_text, key=f"btn_cal_rej_{action.id}", use_container_width=True):
+                        run_async(committer.reject_action(action))
+                        st.rerun()
+            else:
+                success_pill = "✓ Added Successfully" if is_en else "✓ Inserito con Successo"
+                success_desc = (
+                    f"Synchronized with Google Calendar for {weekday_str} {new_date.day} {month_str} at {new_time.strftime('%H:%M')}."
+                    if is_en else
+                    f"Sincronizzato in Google Calendar per {weekday_str} {new_date.day} {month_str} ore {new_time.strftime('%H:%M')}."
+                )
+                st.markdown(
+                    f"""
+                    <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:12px; padding:12px 16px;">
+                        <span class="aria-pill aria-pill-green" style="font-size:11px; font-weight:700;">{success_pill}</span>
+                        <p style="font-size:12.5px; color:#15803D; margin:4px 0 0 0; font-weight:600;">
+                            {success_desc}
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # 4. MINI PREVIEW SETTIMANALE DEL CALENDARIO (Stile macOS Apple Calendar)
+        st.markdown("<hr style='border:none; border-top:1px solid #E5E5EA; margin:16px 0 10px 0;'/>", unsafe_allow_html=True)
+        col_prev_head, col_prev_nav = st.columns([3, 1.3])
+        with col_prev_head:
+            months_short_list = MONTHS_SHORT_EN if is_en else MONTHS_SHORT_IT
+            week_view_lbl = "🗓️ Week View:" if is_en else "🗓️ Vista Settimana:"
+            st.markdown(
+                f"<div style='font-size:13px; font-weight:700; color:#1D1D1F; padding-top:4px;'>"
+                f"  {week_view_lbl} <b>{display_monday.day} {months_short_list[display_monday.month-1]} – {display_sunday.day} {months_short_list[display_sunday.month-1]} {display_monday.year}</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_prev_nav:
+            c_p, c_t_btn, c_n = st.columns([1, 1.4, 1])
+            with c_p:
+                if st.button("‹", key=f"btn_mini_prev_{action.id}", help="Settimana precedente", use_container_width=True):
+                    st.session_state[week_offset_key] = week_offset - 1
+                    st.rerun()
+            with c_t_btn:
+                today_btn_lbl = "Today" if is_en else "Oggi"
+                if st.button(today_btn_lbl, key=f"btn_mini_today_{action.id}", help="Settimana corrente", use_container_width=True):
+                    today_monday = today_local_date - timedelta(days=today_local_date.weekday())
+                    st.session_state[week_offset_key] = (today_monday - meeting_monday).days // 7
+                    st.rerun()
+            with c_n:
+                if st.button("›", key=f"btn_mini_next_{action.id}", help="Settimana successiva", use_container_width=True):
+                    st.session_state[week_offset_key] = week_offset + 1
+                    st.rerun()
+
+        # Render della mini griglia Apple Calendar
+        mini_html = _generate_mini_week_html(
+            display_monday=display_monday,
+            week_events=week_events,
+            target_date=target_date,
+            start_local=start_local,
+            end_local=end_local,
+            title=data.title,
+            today_date=today_local_date,
+            local_tz=local_tz,
         )
+        st.markdown(mini_html, unsafe_allow_html=True)
 
-    # Spazio generoso per distanziare la card calendario dalla card email
-    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-
+    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)

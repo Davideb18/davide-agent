@@ -28,6 +28,7 @@ from src.agent.infrastructure.google.live_google import (
 )
 from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
 from src.agent.infrastructure.llm.gemini_adapter import GeminiExtractorAdapter
+from src.agent.infrastructure.apple.reminders_adapter import AppleRemindersAdapter
 from src.agent.application.process_session import ProcessSessionUseCase
 from src.agent.application.commit_action import CommitActionUseCase
 
@@ -82,15 +83,35 @@ def is_email_live() -> bool:
 
 
 def run_async(coro):
-    """Esegue coroutine async in modo sicuro nel thread sincrono Streamlit."""
+    """Esegue coroutine async in modo sicuro ed isolato nel thread sincrono Streamlit."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return loop.run_until_complete(coro)
-    except Exception:
-        return asyncio.run(coro)
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(lambda: asyncio.run(coro)).result()
+
+        try:
+            event_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(event_loop)
+
+        if event_loop.is_closed():
+            event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(event_loop)
+
+        return event_loop.run_until_complete(coro)
+    except RuntimeError as re_err:
+        if "already running" in str(re_err).lower():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(lambda: asyncio.run(coro)).result()
+        raise
+
 
 
 def init():
@@ -138,15 +159,22 @@ def init():
             model_name="gemini-flash-lite-latest",
         )
 
+        # 6. Apple Reminders nativo (macOS con fallback elegante)
+        st.session_state.reminders = AppleRemindersAdapter()
+
         # UI state
         st.session_state.current_session = None
         st.session_state.elapsed_seconds = None
         st.session_state.audio_bytes = None
         st.session_state.audio_filename = None
+        st.session_state.text_prompt = None
         st.session_state.user_timezone = detect_system_timezone()
         st.session_state.aria_initialized = True
     elif "user_timezone" not in st.session_state:
         st.session_state.user_timezone = detect_system_timezone()
+
+    if "reminders" not in st.session_state:
+        st.session_state.reminders = AppleRemindersAdapter()
 
 
 def get_orchestrator() -> ProcessSessionUseCase:
@@ -165,6 +193,7 @@ def get_committer() -> CommitActionUseCase:
         email_service=st.session_state.email,
         knowledge_service=st.session_state.knowledge,
         repository=st.session_state.repo,
+        reminders_service=st.session_state.get("reminders"),
     )
 
 

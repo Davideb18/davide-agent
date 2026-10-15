@@ -164,21 +164,28 @@ class LiveCalendarService:
                 "timeZone": "UTC",
             },
             "attendees": [{"email": email.strip()} for email in payload.attendees if email.strip()],
-            "conferenceData": {
+        }
+        if payload.location:
+            event_body["location"] = payload.location
+
+        # Conference link solo se espressamente richiesto o meeting virtuale
+        conf_version = 0
+        if payload.location == "Google Meet" or (payload.attendees and not payload.location):
+            event_body["conferenceData"] = {
                 "createRequest": {
                     "requestId": idempotency_key[:20],
                     "conferenceSolutionKey": {"type": "hangoutsMeet"},
                 }
-            },
-        }
+            }
+            conf_version = 1
+
+        insert_kwargs = {"calendarId": "primary", "body": event_body}
+        if conf_version > 0:
+            insert_kwargs["conferenceDataVersion"] = conf_version
 
         created_event = (
             self.service.events()
-            .insert(
-                calendarId="primary",
-                body=event_body,
-                conferenceDataVersion=1,
-            )
+            .insert(**insert_kwargs)
             .execute()
         )
         return created_event.get("id", "unknown_event_id")

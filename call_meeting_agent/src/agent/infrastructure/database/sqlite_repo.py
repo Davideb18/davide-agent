@@ -234,6 +234,37 @@ class SqliteRepository:
 
             await db.commit()
 
+    async def save_proposed_action(self, action: ProposedAction) -> None:
+        """Salva o aggiorna una singola azione proposta (supporta azioni generate on-demand dalla UI)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cal_json = action.calendar_data.model_dump_json() if action.calendar_data else None
+            mail_json = action.email_data.model_dump_json() if action.email_data else None
+            know_json = action.knowledge_data.model_dump_json() if action.knowledge_data else None
+            task_json = action.task_data.model_dump_json() if action.task_data else None
+
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO proposed_actions (
+                    id, session_id, action_type, status, calendar_data_json, email_data_json,
+                    knowledge_data_json, task_data_json, idempotency_key, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action.id,
+                    action.session_id,
+                    action.action_type.value,
+                    action.status.value,
+                    cal_json,
+                    mail_json,
+                    know_json,
+                    task_json,
+                    action.idempotency_key,
+                    action.created_at.isoformat(),
+                    action.updated_at.isoformat(),
+                ),
+            )
+            await db.commit()
+
     async def update_action_status(
         self, action_id: str, new_status: str, diff_payload: Optional[Dict[str, Any]] = None
     ) -> None:

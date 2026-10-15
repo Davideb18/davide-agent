@@ -17,10 +17,13 @@ class ActionType(str, Enum):
     EMAIL_DRAFT = "EMAIL_DRAFT"
     KNOWLEDGE_NOTE = "KNOWLEDGE_NOTE"
     TASK_TODO = "TASK_TODO"
+    TASK_EXPORT_REMINDERS = "TASK_EXPORT_REMINDERS"
 
 
 class IntentCategory(str, Enum):
     """Categorizza l'intento principale estratto dall'audio."""
     BUSINESS_MEETING = "BUSINESS_MEETING"
     FOLLOW_UP = "FOLLOW_UP"
+    PERSONAL_MEMO = "PERSONAL_MEMO"
     CHITCHAT_NOOP = "CHITCHAT_NOOP"
+

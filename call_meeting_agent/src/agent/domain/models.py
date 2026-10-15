@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 from pydantic import BaseModel, Field, EmailStr, field_validator
@@ -9,10 +10,10 @@ class Contact(BaseModel):
     """Rappresenta una persona nel nostro Contact Memory Graph locale."""
     id: str
     first_name: str
-    last_name: str
-    email: EmailStr
-    company: str
-    role: str
+    last_name: str = ""
+    email: str = ""
+    company: str = "N/D"
+    role: str = "Persona"
     aliases: List[str] = Field(default_factory=list) # soprannomi
     tags: List[str] = Field(default_factory=list) # tag tematici (per capire di cosa si occupa)
     timezone: str = "Europe/Rome"
@@ -47,9 +48,25 @@ class CalendarPayload(BaseModel):
     end_utc: datetime
     attendees: List[str] = Field(default_factory=list)
     description: str = ""
-    location: Optional[str] = "Google Meet"
+    location: Optional[str] = None
     alternative_slots_utc: List[datetime] = Field(default_factory=list) # Slot alternativi per il meeting 
 
+
+
+class PersonInteractionRecord(BaseModel):
+    """Singola interazione storica recuperata dal Second Brain."""
+    meeting_date: str
+    title: str
+    summary: str
+    link: str = ""
+
+
+class PersonHistorySummary(BaseModel):
+    """Riepilogo della memoria storica e delle preferenze del contatto (People Intelligence)."""
+    contact_name: str
+    last_meeting_date: Optional[str] = None
+    key_preferences: List[str] = Field(default_factory=list)
+    recent_interactions: List[PersonInteractionRecord] = Field(default_factory=list)
 
 
 class EmailPayload(BaseModel):
@@ -59,6 +76,9 @@ class EmailPayload(BaseModel):
     subject: str
     body_markdown: str  # il testo formattato in markdown
     cc: List[str] = Field(default_factory=list)
+    linked_calendar_action_id: Optional[str] = None
+    conflict_reason: Optional[str] = None
+    suggested_alternatives: List[str] = Field(default_factory=list)
 
     @field_validator("recipient_email", mode="before")
     @classmethod
@@ -66,6 +86,19 @@ class EmailPayload(BaseModel):
         if isinstance(v, str):
             return re.sub(r"\s+", "", v).lower()
         return str(v)
+
+    def __init__(self, **data):
+        if "body" in data and "body_markdown" not in data:
+            data["body_markdown"] = data.pop("body")
+        super().__init__(**data)
+
+    @property
+    def body(self) -> str:
+        return self.body_markdown
+
+    @body.setter
+    def body(self, value: str) -> None:
+        self.body_markdown = value
 
 
 class KnowledgePayload(BaseModel):
@@ -79,24 +112,33 @@ class KnowledgePayload(BaseModel):
 
 
 class TaskPayload(BaseModel):
-    """I dati per creare o aggiornare una lista di task operativi (To-Do)."""
+    """I dati per creare o aggiornare una lista di task operativi (To-Do o Promemoria)."""
     task_items: List[str] = Field(default_factory=list)
     assignee: Optional[str] = None
     target_project: Optional[str] = None
     deadline_utc: Optional[datetime] = None
 
+    def __init__(self, **data):
+        if "items" in data and "task_items" not in data:
+            data["task_items"] = data.pop("items")
+        super().__init__(**data)
+
+    @property
+    def items(self) -> List[str]:
+        return self.task_items
+
 
 class ProposedAction(BaseModel):
-    """Una singola azione proposta dal sistema (Calendar o Gmail) con ciclo di vita e chiave di idempotenza."""
-    id: str
-    session_id: str
-    action_type: ActionType # tipo di azione: CALENDAR_EVENT o EMAIL_DRAFT
-    status: ActionStatus # stato dell'azione: PROPOSED, CONFLICT_DETECTED, APPROVED, EXECUTED, EXECUTION_FAILED, REJECTED, DISCARDED
+    """Una singola azione proposta dal sistema con ciclo di vita e chiave di idempotenza."""
+    id: str = Field(default_factory=lambda: f"act_{uuid.uuid4().hex[:10]}")
+    session_id: str = ""
+    action_type: ActionType
+    status: ActionStatus = ActionStatus.PROPOSED
     calendar_data: Optional[CalendarPayload] = None
     email_data: Optional[EmailPayload] = None
-    knowledge_data: Optional[KnowledgePayload] = None # nota da salvare nel second brain
-    task_data: Optional[TaskPayload] = None # task operativi da tracciare
-    idempotency_key: str # chiave unica per ogni azione
+    knowledge_data: Optional[KnowledgePayload] = None
+    task_data: Optional[TaskPayload] = None
+    idempotency_key: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -104,9 +146,11 @@ class ProposedAction(BaseModel):
 class SessionExtractionResult(BaseModel):
     """Il risultato complessivo dell'analisi dell'audio: trascrizione, entità e azioni proposte."""
     session_id: str
-    is_actionable: bool = True # indica se c'è un output sfruttabile (vero) o se è solo rumore/saluti (falso)
+    is_actionable: bool = True
     intent_category: IntentCategory = IntentCategory.BUSINESS_MEETING
     summary: str 
     raw_transcript: str
+    detected_language: str = Field(default="it", description="Lingua rilevata dall'audio/prompt o impostata dal profilo Second Brain (es. 'it', 'en', 'es', 'de').")
     entities: List[ExtractedEntity] = Field(default_factory=list)
     proposed_actions: List[ProposedAction] = Field(default_factory=list)
+    person_history: Optional[PersonHistorySummary] = None

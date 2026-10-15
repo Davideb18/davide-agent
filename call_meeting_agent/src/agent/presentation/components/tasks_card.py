@@ -43,13 +43,66 @@ def render_tasks_card(task_action: Optional[ProposedAction], know_action: Option
 
                 if task_action.status != ActionStatus.EXECUTED:
                     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                    if st.button("✅  Salva Compiti in Tasks.md", key=f"btn_save_tasks_{task_action.id}", type="primary", use_container_width=True):
-                        ok, _ = run_async(committer.execute_action(task_action, user_modified_payload=task_action.task_data.model_dump(mode="json")))
-                        if ok:
-                            st.toast("Compiti archiviati nel Second Brain!", icon="📋")
-                            st.rerun()
+                    c_save_obs, c_save_rem = st.columns([1, 1])
+                    with c_save_obs:
+                        if st.button("📋  Salva in Tasks.md", key=f"btn_save_tasks_{task_action.id}", type="primary", use_container_width=True):
+                            ok, _ = run_async(committer.execute_action(task_action, user_modified_payload=task_action.task_data.model_dump(mode="json")))
+                            if ok:
+                                st.toast("Compiti archiviati nel Second Brain!", icon="📋")
+                                st.rerun()
+                    with c_save_rem:
+                        rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
+                        if not rem_synced:
+                            if st.button("🍎  Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", use_container_width=True):
+                                import uuid
+                                import hashlib
+                                from src.agent.domain.enums import ActionType
+                                from src.agent.domain.models import TaskPayload
+
+                                raw_sig = f"{task_action.session_id}_reminders_{','.join(task_action.task_data.task_items)}"
+                                rem_action = ProposedAction(
+                                    id=f"act_rem_{uuid.uuid4().hex[:8]}",
+                                    session_id=task_action.session_id,
+                                    action_type=ActionType.TASK_EXPORT_REMINDERS,
+                                    idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
+                                    task_data=TaskPayload(task_items=task_action.task_data.task_items),
+                                )
+                                ok, msg = run_async(committer.execute_action(rem_action))
+                                if ok:
+                                    st.session_state[f"reminders_synced_{task_action.id}"] = True
+                                    st.toast(msg, icon="🍎")
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        else:
+                            st.markdown('<span class="aria-pill aria-pill-green" style="font-size:10.5px;">✓ In Promemoria macOS</span>', unsafe_allow_html=True)
                 else:
                     st.markdown('<span class="aria-pill aria-pill-green">✓ Compiti Sincronizzati in Tasks.md</span>', unsafe_allow_html=True)
+                    rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
+                    if not rem_synced:
+                        if st.button("🍎  Esporta anche su Promemoria macOS ('Aria Tasks')", key=f"btn_save_reminders_post_{task_action.id}", use_container_width=True):
+                            import uuid
+                            import hashlib
+                            from src.agent.domain.enums import ActionType
+                            from src.agent.domain.models import TaskPayload
+
+                            raw_sig = f"{task_action.session_id}_reminders_{','.join(task_action.task_data.task_items)}"
+                            rem_action = ProposedAction(
+                                id=f"act_rem_{uuid.uuid4().hex[:8]}",
+                                session_id=task_action.session_id,
+                                action_type=ActionType.TASK_EXPORT_REMINDERS,
+                                idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
+                                task_data=TaskPayload(task_items=task_action.task_data.task_items),
+                            )
+                            ok, msg = run_async(committer.execute_action(rem_action))
+                            if ok:
+                                st.session_state[f"reminders_synced_{task_action.id}"] = True
+                                st.toast(msg, icon="🍎")
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    else:
+                        st.markdown('<div style="height:4px;"></div><span class="aria-pill aria-pill-green">✓ Esportato anche in Promemoria macOS</span>', unsafe_allow_html=True)
 
         # Sezione Obsidian Vault a destra
         with col_vault:

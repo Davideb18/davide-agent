@@ -1,4 +1,4 @@
-from typing import Protocol, List, Optional, Dict, Any
+from typing import Protocol, List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 from .models import (
@@ -9,14 +9,39 @@ from .models import (
     Contact,
     KnowledgePayload,
     TaskPayload,
+    PersonHistorySummary,
+    ProposedAction,
 )
 
 
 class LLMExtractorPort(Protocol):
-    """Contratto per il motore AI: riceve l'audio e restituisce i dati strutturati."""
+    """Contratto per il motore AI: riceve audio o prompt testuale e restituisce i dati strutturati."""
     async def extract_from_audio(
-        self, audio_bytes: bytes, filename: str, anchor_utc: datetime, user_tz: str = "Europe/Rome"
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        anchor_utc: datetime,
+        user_tz: str = "Europe/Rome",
+        user_profile_language: Optional[str] = None,
     ) -> SessionExtractionResult:
+        ...
+
+    async def extract_from_text(
+        self,
+        text_prompt: str,
+        anchor_utc: datetime,
+        user_tz: str = "Europe/Rome",
+        user_profile_language: Optional[str] = None,
+    ) -> SessionExtractionResult:
+        ...
+
+    async def regenerate_email_draft(
+        self,
+        original_payload: EmailPayload,
+        new_slot_str: str,
+        history: Optional[PersonHistorySummary] = None,
+        user_tz: str = "Europe/Rome",
+    ) -> EmailPayload:
         ...
 
 
@@ -47,6 +72,14 @@ class EmailServicePort(Protocol):
         ...
 
 
+class RemindersServicePort(Protocol):
+    """Contratto per l'esportazione verso Apple Reminders (Promemoria macOS)."""
+    async def export_tasks(
+        self, task_items: List[str], list_name: str = "Aria Tasks"
+    ) -> Tuple[bool, str]:
+        ...
+
+
 class RepositoryPort(Protocol):
     """Contratto per il database locale (SQLite): lettura contatti e salvataggio delle azioni."""
     # recupera l'intera rubrica locale per permettere all'AI di confrontare i nomi detti a voce
@@ -59,6 +92,10 @@ class RepositoryPort(Protocol):
 
     # salva nel DB l'intera sessione audio: riassunto, trascrizione e tutte le azioni proposte dall'AI
     async def save_session(self, session: SessionExtractionResult) -> None:
+        ...
+
+    # salva o inserisce una singola azione proposta (es. generata on-demand dalla UI)
+    async def save_proposed_action(self, action: ProposedAction) -> None:
         ...
 
     # aggiorna lo stato (es. da PROPOSED a APPROVED) di un'azione, gestisce anche logica di idempotenza
@@ -92,5 +129,25 @@ class KnowledgeServicePort(Protocol):
 
     async def append_tasks(self, payload: TaskPayload, meeting_ref: str) -> str:
         ...
+
+    # Recupera lo storico degli incontri e preferenze note della persona
+    async def get_person_history(self, person_name: str) -> Optional[PersonHistorySummary]:
+        ...
+
+    # Collega atomicamente un meeting al dossier della persona (backlink bidirezionale)
+    async def link_meeting_to_person(
+        self,
+        person_name: str,
+        meeting_title: str,
+        meeting_rel_path: str,
+        summary: str,
+        insights: Optional[List[str]] = None,
+    ) -> bool:
+        ...
+
+    # Recupera l'eventuale preferenza linguistica dal profilo utente nel Second Brain
+    async def get_user_profile_language(self) -> Optional[str]:
+        ...
+
 
 

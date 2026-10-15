@@ -4,7 +4,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from ...domain.models import KnowledgePayload, TaskPayload
+from ...domain.models import (
+    KnowledgePayload,
+    TaskPayload,
+    PersonHistorySummary,
+    PersonInteractionRecord,
+)
 
 
 class ObsidianAdapter:
@@ -192,3 +197,232 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
             f.write(header + items_str)
 
         return str(tasks_file)
+
+    def _safe_person_filename(self, person_name: str) -> str:
+        """Sanitizza il nome del contatto per garantire un nome file valido e sicuro sul filesystem."""
+        clean = person_name.strip()
+        safe = re.sub(r'[\\/*?:"<>|]', "", clean).strip()
+        safe = re.sub(r"\s+", "_", safe)
+        return f"{safe or 'Contatto'}.md"
+
+    def _find_person_file(self, person_name: str) -> Optional[Path]:
+        """Individua in modo flessibile il file markdown del contatto."""
+        safe_name = self._safe_person_filename(person_name)
+        p = self.contacts_dir / safe_name
+        if p.exists():
+            return p
+        clean = person_name.strip().replace(" ", "_").lower()
+        if self.contacts_dir.exists():
+            for f in self.contacts_dir.glob("*.md"):
+                if f.stem.lower() == clean or f.stem.lower() == person_name.strip().lower():
+                    return f
+        return None
+
+    async def get_person_history(self, person_name: str) -> Optional[PersonHistorySummary]:
+        """
+        Recupera la memoria storica del contatto dal Second Brain (People Intelligence).
+        Estrae cronologia interazioni, ultimo contatto e preferenze registrate nel tempo.
+        """
+        file_path = self._find_person_file(person_name)
+        if not file_path or not file_path.exists():
+            return None
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            return None
+
+        # Estrazione blocchi di interazione: ### 🗓️ Interazione del YYYY-MM-DD
+        pattern = r"###\s*🗓️?\s*Interazione del\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s*\(Rif:\s*\[\[(.*?)\]\]\))?\s*\n(.*?)(?=\n###|\Z)"
+        matches = list(re.finditer(pattern, content, re.DOTALL))
+
+        interactions: List[PersonInteractionRecord] = []
+        last_date = None
+
+        for match in matches:
+            date_str = match.group(1).strip()
+            meeting_ref = match.group(2).strip() if match.group(2) else ""
+            body_text = match.group(3).strip()
+            
+            # Estrae i bullet points
+            b_lines = [l.strip() for l in body_text.splitlines() if l.strip()]
+            bullets = [line.lstrip("-* ").strip() for line in b_lines if line.startswith(("-", "*"))]
+            summary_text = bullets[0] if bullets else (b_lines[0] if b_lines else "Incontro di allineamento.")
+            
+            interactions.append(
+                PersonInteractionRecord(
+                    meeting_date=date_str,
+                    title=meeting_ref or f"Meeting del {date_str}",
+                    summary=summary_text,
+                    link=meeting_ref,
+                )
+            )
+            last_date = date_str
+
+        # Estrazione preferenze note: cerca sezione Profilo o bullet con keyword
+        preferences: List[str] = []
+        pref_section_match = re.search(r"##\s*📌?\s*Profilo\s*&\s*Preferenze Note(.*?)(?=##|\Z)", content, re.DOTALL)
+        if pref_section_match:
+            sec_lines = pref_section_match.group(1).splitlines()
+            for line in sec_lines:
+                clean_l = line.lstrip("-* ").strip()
+                if clean_l and not clean_l.startswith("Scheda generata") and len(clean_l) > 5:
+                    preferences.append(clean_l)
+
+        # Scansione aggiuntiva nelle interazioni per insight su orari/preferenze
+        for rec in interactions:
+            for word in ["preferisce", "orari", "pomeriggio", "mattina", "call", "abitudine", "disponibile"]:
+                if word in rec.summary.lower() and rec.summary not in preferences:
+                    preferences.append(rec.summary)
+
+        return PersonHistorySummary(
+            contact_name=person_name,
+            last_meeting_date=last_date,
+            key_preferences=preferences[:4],
+            recent_interactions=list(reversed(interactions))[:5],
+        )
+
+    async def link_meeting_to_person(
+        self,
+        person_name: str,
+        meeting_title: str,
+        meeting_rel_path: str,
+        summary: str,
+        insights: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Aggiorna atomicamente la scheda del contatto creando un backlink bidirezionale formale verso la nota meeting.
+        Preserva rigorosamente il frontmatter YAML e il contenuto manuale preesistente.
+        """
+        filename = self._safe_person_filename(person_name)
+        file_path = self.contacts_dir / filename
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # 1. Se il dossier non esiste, lo crea con la struttura base
+        if not file_path.exists():
+            clean_name = person_name.strip()
+            initial_content = f"""---
+name: "{clean_name}"
+type: person
+tags:
+  - contact
+  - network
+created: {now_str}
+---
+
+# [[{clean_name}]]
+
+- **Tipo:** Dossier Persona / Relazione Professionale
+- **Creato il:** {now_str}
+
+## 📌 Profilo & Preferenze Note
+Scheda arricchita automaticamente dall'Executive AI Agent.
+
+---
+
+## 📜 Storico Interazioni & Riunioni
+"""
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(initial_content)
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing_text = f.read()
+
+            bullets = []
+            if summary and summary.strip():
+                bullets.append(f"- {summary.strip()}")
+            if insights:
+                for ins in insights:
+                    if ins and ins.strip() and ins.strip() != (summary or "").strip():
+                        bullets.append(f"- {ins.strip()}")
+            if not bullets:
+                bullets.append("- Incontro di allineamento e sincronizzazione operativa.")
+
+            entry_body = "\n".join(bullets)
+            entry = f"\n### 🗓️ Interazione del {now_str} (Rif: [[{meeting_rel_path}|{meeting_title}]])\n{entry_body}\n"
+
+            # Inserimento atomico: cerca header storico con regex flessibile (con o senza emoji)
+            header_pattern = r"(##\s*(?:📜\s*)?(?:Storico\s*Interazioni(?:\s*&\s*Riunioni)?|Incontri\s*Recenti))"
+            header_match = re.search(header_pattern, existing_text, re.IGNORECASE)
+            if header_match:
+                idx = header_match.end()
+                new_text = existing_text[:idx] + "\n" + entry + existing_text[idx:]
+            else:
+                new_text = existing_text + f"\n\n## 📜 Storico Interazioni & Riunioni\n" + entry
+
+            # Scrittura atomica tramite file temporaneo per prevenire corruzioni
+            tmp_path = file_path.with_suffix(".md.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            tmp_path.replace(file_path)
+            return True
+        except Exception:
+            return False
+
+    def _normalize_language_name(self, lang_str: str) -> str:
+        """Normalizza la lingua in italiano, inglese, o codice ISO."""
+        l = lang_str.lower().strip()
+        if l in ("it", "ita", "italiano", "italian"):
+            return "Italiano"
+        if l in ("en", "eng", "inglese", "english"):
+            return "English"
+        if l in ("es", "spa", "spagnolo", "spanish"):
+            return "Español"
+        if l in ("de", "deu", "tedesco", "german"):
+            return "Deutsch"
+        if l in ("fr", "fra", "francese", "french"):
+            return "Français"
+        return lang_str.capitalize()
+
+    async def get_user_profile_language(self) -> Optional[str]:
+        """
+        Recupera la preferenza linguistica specificata nel profilo utente all'interno del Second Brain.
+        Cerca in file come IDENTITY/Profile.md, Profile.md, User_Profile.md.
+        """
+        candidate_files = [
+            self.vault_path / "IDENTITY" / "Profile.md",
+            self.vault_path / "IDENTITY" / "profile.md",
+            self.vault_path / "IDENTITY" / "User_Profile.md",
+            self.vault_path / "Profile.md",
+            self.vault_path / "profile.md",
+        ]
+
+        identity_dir = self.vault_path / "IDENTITY"
+        if identity_dir.exists():
+            for f in identity_dir.glob("*.md"):
+                if f not in candidate_files:
+                    candidate_files.append(f)
+
+        for filepath in candidate_files:
+            if not filepath.exists():
+                continue
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # 1. Cerca nel frontmatter YAML (es. language: it / lingua: italiano / preferred_language: en)
+                yaml_matches = re.findall(
+                    r"(?i)^(?:language|lingua|preferred_language|lingua_preferita)\s*:\s*[\"']?([a-zA-Z\s]+)[\"']?",
+                    content,
+                    re.MULTILINE,
+                )
+                if yaml_matches:
+                    val = yaml_matches[0].strip().lower()
+                    return self._normalize_language_name(val)
+
+                # 2. Cerca nel corpo markdown (es. - **Lingua**: Italiano / **Language**: English)
+                body_matches = re.findall(
+                    r"(?i)(?:-|\*)\s*\*\*(?:lingua|language|lingua preferita|preferred language)\*\*:\s*([a-zA-Z]+)",
+                    content,
+                )
+                if body_matches:
+                    val = body_matches[0].strip().lower()
+                    return self._normalize_language_name(val)
+            except Exception:
+                continue
+
+        return None
+
+

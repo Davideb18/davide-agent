@@ -67,7 +67,33 @@ def render_sidebar(session: SessionExtractionResult):
             contact = run_async(st.session_state.repo.get_contact_by_id(primary_entity.matched_contact_id))
 
         if contact:
-            initials = f"{contact.first_name[0]}{contact.last_name[0]}".upper()
+            fn = (contact.first_name or "").strip()
+            ln = (contact.last_name or "").strip()
+            if fn and ln:
+                initials = f"{fn[:1]}{ln[:1]}".upper()
+            elif len(fn) >= 2:
+                initials = fn[:2].upper()
+            elif len(fn) == 1:
+                initials = fn.upper()
+            elif len(ln) >= 2:
+                initials = ln[:2].upper()
+            elif len(ln) == 1:
+                initials = ln.upper()
+            else:
+                initials = "👤"
+
+            full_display_name = f"{fn} {ln}".strip() or "Contatto"
+            badges = []
+            comp = (contact.company or "").strip()
+            role = (contact.role or "").strip()
+            junk_terms = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
+            if comp and not any(t in comp.lower() for t in junk_terms):
+                badges.append(f'<span class="aria-pill aria-pill-blue" style="font-size:10.5px;">{comp}</span>')
+            if role and not any(t in role.lower() for t in junk_terms):
+                badges.append(f'<span class="aria-pill aria-pill-grey" style="font-size:10.5px;">{role}</span>')
+            badges_html = f"<div style='display:flex; justify-content:center; flex-wrap:wrap; gap:5px; margin-bottom:8px;'>{''.join(badges)}</div>" if badges else ""
+            email_html = f'<a href="mailto:{contact.email}" style="font-size: 11.5px; color: #0066CC; text-decoration: none; font-weight: 500;">{contact.email}</a>' if contact.email else '<span style="font-size: 11px; color:#8E8E93;">Nessuna email registrata</span>'
+
             st.markdown(
                 f"""
                 <div style="
@@ -93,15 +119,10 @@ def render_sidebar(session: SessionExtractionResult):
                         margin: 0 auto 10px auto;
                     ">{initials}</div>
                     <h3 style="font-size: 15.5px; font-weight: 700; color: #1A1A1E; margin: 0 0 4px 0; letter-spacing: -0.02em;">
-                        {contact.first_name} {contact.last_name}
+                        {full_display_name}
                     </h3>
-                    <div style="display:flex; justify-content:center; gap:5px; margin-bottom:8px;">
-                        <span class="aria-pill aria-pill-blue" style="font-size:10.5px;">{contact.company}</span>
-                        <span class="aria-pill aria-pill-grey" style="font-size:10.5px;">{contact.role}</span>
-                    </div>
-                    <a href="mailto:{contact.email}" style="font-size: 11.5px; color: #0066CC; text-decoration: none; font-weight: 500;">
-                        {contact.email}
-                    </a>
+                    {badges_html}
+                    {email_html}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -120,62 +141,102 @@ def render_sidebar(session: SessionExtractionResult):
                 ">
                     <div style="font-size: 26px; margin-bottom: 4px;">👤</div>
                     <h3 style="font-size: 15px; font-weight: 700; color: #1A1A1E; margin: 0;">{ent.raw_name}</h3>
-                    <p style="font-size: 11.5px; color: #6E6E73; margin: 2px 0 0 0;">Interlocutore non in rubrica</p>
+                    <p style="font-size: 11.5px; color: #6E6E73; margin: 2px 0 0 0;">Contatto non in rubrica</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # Quick Action: Aggiungi a Contatti
-            with st.popover("➕  Aggiungi a Contatti", use_container_width=True):
-                st.markdown("<p style='font-size:13px; font-weight:700; margin-bottom:6px;'>Nuovo Contatto in Rubrica</p>", unsafe_allow_html=True)
+            # Quick Action: Aggiungi a Contatti (Expander fluido che si apre verso il basso)
+            with st.expander("➕  Salva Contatto in Rubrica", expanded=False):
+                st.markdown("<p style='font-size:12.5px; font-weight:700; margin-bottom:6px;'>Salva Persona</p>", unsafe_allow_html=True)
                 raw_parts = ent.raw_name.strip().split(maxsplit=1)
-                default_fn = raw_parts[0] if raw_parts else ""
+                default_fn = raw_parts[0] if raw_parts else ent.raw_name.strip()
                 default_ln = raw_parts[1] if len(raw_parts) > 1 else ""
 
-                default_comp = ""
-                default_role = ""
-                if ent.context_clues:
-                    default_comp = ent.context_clues[0]
-                    if len(ent.context_clues) > 1:
-                        default_role = ent.context_clues[1]
+                default_desc = "Persona"
+                raw_lower = ent.raw_name.lower()
+                if any(k in raw_lower for k in ("mamma", "madre", "papà", "padre", "fratello", "sorella", "famiglia")):
+                    default_desc = "Famiglia"
+                elif ent.context_clues and len(ent.context_clues) > 0:
+                    clue = ent.context_clues[0].strip()
+                    junk_clues = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
+                    if not any(j in clue.lower() for j in junk_clues):
+                        default_desc = clue
 
-                # Suggerimento email da bozza email proposta se presente
-                suggested_email = ""
-                for a in session.proposed_actions:
-                    if a.action_type == ActionType.EMAIL_DRAFT and a.email_data and a.email_data.recipient_email:
-                        suggested_email = a.email_data.recipient_email
-                        break
-                if not suggested_email:
-                    slug_fn = default_fn.lower().replace(" ", "")
-                    slug_ln = default_ln.lower().replace(" ", "")
-                    suggested_email = f"{slug_fn}.{slug_ln}@azienda.com" if slug_ln else f"{slug_fn}@azienda.com"
-
+                # Email vuota di default se non esplicitata per evitare attribuzioni errate
                 q_fn = st.text_input("Nome:", value=default_fn, key=f"q_fn_{ent.raw_name}")
-                q_ln = st.text_input("Cognome:", value=default_ln, key=f"q_ln_{ent.raw_name}")
-                q_comp = st.text_input("Azienda:", value=default_comp, key=f"q_comp_{ent.raw_name}")
-                q_role = st.text_input("Ruolo:", value=default_role, key=f"q_role_{ent.raw_name}")
-                q_mail = st.text_input("Email:", value=suggested_email, key=f"q_mail_{ent.raw_name}")
+                q_ln = st.text_input("Cognome (opzionale):", value=default_ln, key=f"q_ln_{ent.raw_name}")
+                q_desc = st.text_input("Descrizione / Relazione (opzionale):", value=default_desc, key=f"q_desc_{ent.raw_name}", help="Es. Famiglia, Amico, Collega")
+                q_mail = st.text_input("Email (opzionale):", value="", key=f"q_mail_{ent.raw_name}")
 
-                if st.button("Salva in Rubrica", type="primary", use_container_width=True, key=f"btn_save_cnt_{ent.raw_name}"):
+                if st.button("Salva Persona", type="primary", use_container_width=True, key=f"btn_save_cnt_{ent.raw_name}"):
                     new_contact = Contact(
                         id=f"cnt_{uuid.uuid4().hex[:8]}",
                         first_name=q_fn.strip() or ent.raw_name,
                         last_name=q_ln.strip(),
                         email=q_mail.strip(),
-                        company=q_comp.strip() or "N/D",
-                        role=q_role.strip() or "Referente",
+                        company="N/D",
+                        role=q_desc.strip() or default_desc,
                         aliases=[ent.raw_name, q_fn.strip()],
-                        tags=["network", "executive_lead"],
+                        tags=["famiglia" if default_desc == "Famiglia" else "network"],
                         timezone=st.session_state.get("user_timezone", "Europe/Rome"),
                     )
                     run_async(st.session_state.repo.add_contact(new_contact))
                     ent.matched_contact_id = new_contact.id
                     ent.is_ambiguous = False
-                    st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name} salvato con successo!", icon="👤")
+                    st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name}".strip() + " salvato con successo!", icon="👤")
                     st.rerun()
 
             st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+        # ── MEMORIA STORICA & PEOPLE INTELLIGENCE ────────────────────────
+        if session.person_history:
+            ph = session.person_history
+            last_date_str = ph.last_meeting_date or "Nessun incontro recente"
+            prefs_html = "".join(
+                f'<span class="aria-pill aria-pill-blue" style="font-size:10px; margin:2px 2px 2px 0;">{p}</span>'
+                for p in ph.key_preferences[:4]
+            ) or '<span style="font-size:11px; color:#6E6E73;">Nessuna preferenza registrata</span>'
+
+            interactions_count = len(ph.recent_interactions)
+            interactions_label = (
+                f"{interactions_count} note meeting collegate"
+                if interactions_count > 0
+                else "Primo incontro archiviato"
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    background: rgba(255, 255, 255, 0.90);
+                    backdrop-filter: blur(16px);
+                    -webkit-backdrop-filter: blur(16px);
+                    border: 1px solid #D2D2D7;
+                    border-radius: 14px;
+                    padding: 12px 14px;
+                    margin-bottom: 14px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+                ">
+                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                        <span style="font-size:13px;">🧠</span>
+                        <div style="font-size:11px; font-weight:700; color:#1A1A1E; text-transform:uppercase; letter-spacing:0.04em;">
+                            Memoria & Preferenze
+                        </div>
+                    </div>
+                    <div style="font-size:11.5px; color:#1A1A1E; margin-bottom:6px;">
+                        <b>Ultimo sync:</b> <span style="color:#0066CC;">{last_date_str}</span>
+                    </div>
+                    <div style="margin-bottom:6px; display:flex; flex-wrap:wrap; gap:3px;">
+                        {prefs_html}
+                    </div>
+                    <div style="font-size:10.5px; color:#6E6E73;">
+                        🔗 {interactions_label}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         # ── GRIGLIA METRICHE DINAMICHE REALI ────────────────────────────
         elapsed = st.session_state.get("elapsed_seconds", "—")
@@ -242,6 +303,7 @@ def render_sidebar(session: SessionExtractionResult):
             ActionType.EMAIL_DRAFT: ("✉️", "Email"),
             ActionType.KNOWLEDGE_NOTE: ("🧠", "Note"),
             ActionType.TASK_TODO: ("✅", "Compiti"),
+            ActionType.TASK_EXPORT_REMINDERS: ("🍎", "Promemoria macOS"),
         }
         for act in session.proposed_actions:
             icon, label = action_map.get(act.action_type, ("•", str(act.action_type.value)))
