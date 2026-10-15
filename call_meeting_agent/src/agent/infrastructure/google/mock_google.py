@@ -2,7 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional, Dict
 
-from ...domain.models import CalendarPayload, EmailPayload
+from ...domain.models import CalendarPayload, EmailPayload, CalendarEventItem
 from ...application.resolve_conflict import evaluate_calendar_slot
 
 
@@ -10,11 +10,11 @@ class MockCalendarService:
     """Simulatore di Google Calendar per test deterministici e demo offline senza credenziali."""
 
     def __init__(self, simulated_busy_slots: Optional[List[Tuple[datetime, datetime]]] = None) -> None:
-        # Se non passiamo impegni, ne creiamo uno automatico per OGGI alle 15:00 UTC
+        # Se non passiamo impegni, ne creiamo uno automatico per OGGI alle 14:00 UTC
+        now_base = datetime.now(timezone.utc).replace(hour=14, minute=0, second=0, microsecond=0)
         if simulated_busy_slots is not None:
             self.busy_slots = simulated_busy_slots
         else:
-            now_base = datetime.now(timezone.utc).replace(hour=14, minute=0, second=0, microsecond=0)
             self.busy_slots = [
                 (now_base, now_base + timedelta(hours=1)),  # Dalle 14:00 alle 15:00 UTC: OCCUPATO!
                 (now_base + timedelta(days=1, hours=1), now_base + timedelta(days=1, hours=3)), # Domani: OCCUPATO
@@ -28,6 +28,110 @@ class MockCalendarService:
             if start_utc < busy_end and end_utc > busy_start:
                 return True
         return False
+
+    async def get_events(self, start_utc: datetime, end_utc: datetime) -> List[CalendarEventItem]:
+        """Restituisce un'agenda realistica a 3 giorni (Ieri, Oggi, Domani) in stile Apple Calendar."""
+        today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_midnight = today_midnight - timedelta(days=1)
+        tomorrow_midnight = today_midnight + timedelta(days=1)
+
+        all_mock_events: List[CalendarEventItem] = [
+            # ── IERI ────────────────────────────────────────────────────────
+            CalendarEventItem(
+                id="evt_yesterday_1",
+                title="Allineamento Architettura & Microservizi",
+                start_utc=yesterday_midnight.replace(hour=10, minute=0),
+                end_utc=yesterday_midnight.replace(hour=11, minute=0),
+                location="Google Meet",
+                attendees=["filippo@trellis.so"],
+                description="Studio transizione verso Clean Architecture e gestione lock distribuiti.",
+                color_tag="purple",
+            ),
+            CalendarEventItem(
+                id="evt_yesterday_2",
+                title="Call Review Investitori & Metriche PMS",
+                start_utc=yesterday_midnight.replace(hour=15, minute=30),
+                end_utc=yesterday_midnight.replace(hour=16, minute=30),
+                location="Zoom Call",
+                attendees=["investors@syndicate.vc"],
+                description="Presentazione KPI trimestrali e retention rate.",
+                color_tag="orange",
+            ),
+            # ── OGGI (GIORNO MEETING / COLLOQUIO) ────────────────────────────
+            CalendarEventItem(
+                id="evt_today_1",
+                title="Daily Standup Engineering",
+                start_utc=today_midnight.replace(hour=9, minute=30),
+                end_utc=today_midnight.replace(hour=10, minute=0),
+                location="Google Meet",
+                attendees=["filippo@trellis.so", "team@trellis.so"],
+                description="Allineamento rapido del team di ingegneria sulle priorità del rilascio.",
+                color_tag="blue",
+            ),
+            CalendarEventItem(
+                id="evt_today_conflict",
+                title="Sprint Review Trellis & Roadmap Q4",
+                start_utc=today_midnight.replace(hour=14, minute=0),
+                end_utc=today_midnight.replace(hour=15, minute=0),
+                location="Google Meet",
+                attendees=["filippo@trellis.so"],
+                description="Revisione avanzamento sprint, architettura PMS e stato delle integrazioni.",
+                color_tag="purple",
+                is_conflict=True,
+            ),
+            CalendarEventItem(
+                id="evt_today_2",
+                title="Sync Contrattuale & Modello Commissioni",
+                start_utc=today_midnight.replace(hour=17, minute=0),
+                end_utc=today_midnight.replace(hour=17, minute=45),
+                location="Milano Office",
+                attendees=["marco.rossi@legalstudio.it"],
+                description="Chiusura NDA e verifica clausole sul pricing al 3%.",
+                color_tag="orange",
+            ),
+            # ── DOMANI ──────────────────────────────────────────────────────
+            CalendarEventItem(
+                id="evt_tomorrow_1",
+                title="Design Review UI/UX & Design System",
+                start_utc=tomorrow_midnight.replace(hour=11, minute=0),
+                end_utc=tomorrow_midnight.replace(hour=12, minute=0),
+                location="Figma & Google Meet",
+                attendees=["marco.bianchi@designstudio.io"],
+                description="Revisione componenti Apple-grade e palette colori ad alto contrasto.",
+                color_tag="blue",
+            ),
+            CalendarEventItem(
+                id="evt_tomorrow_2",
+                title="Sessione Tecnica & Deep Dive Colloquio",
+                start_utc=tomorrow_midnight.replace(hour=15, minute=0),
+                end_utc=tomorrow_midnight.replace(hour=17, minute=0),
+                location="Google Meet",
+                attendees=["filippo@trellis.so"],
+                description="Approfondimento su State Machine, Concurrency Lock e Idempotenza.",
+                color_tag="purple",
+            ),
+        ]
+
+        # Aggiungiamo eventuali eventi creati dinamicamente dall'utente durante la sessione
+        for ev_id, payload in self.created_events.items():
+            all_mock_events.append(
+                CalendarEventItem(
+                    id=ev_id,
+                    title=payload.title,
+                    start_utc=payload.start_utc,
+                    end_utc=payload.end_utc,
+                    location=payload.location,
+                    attendees=payload.attendees,
+                    description=payload.description,
+                    color_tag="green",
+                )
+            )
+
+        # Filtra gli eventi che si sovrappongono all'intervallo richiesto [start_utc, end_utc]
+        return [
+            ev for ev in all_mock_events
+            if ev.start_utc < end_utc and ev.end_utc > start_utc
+        ]
 
     async def find_alternative_slots(
         self, requested_start_utc: datetime, duration_minutes: int, count: int = 3

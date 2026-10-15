@@ -26,6 +26,19 @@ class ExtractedEntity(BaseModel):
     candidate_ids: List[str] = Field(default_factory=list) # possibili candidati tra i quali scegliere in caso di ambiguità
 
 
+class CalendarEventItem(BaseModel):
+    """Rappresenta un impegno esistente in agenda (per visualizzazione nel calendario Apple)."""
+    id: str
+    title: str
+    start_utc: datetime
+    end_utc: datetime
+    location: Optional[str] = None
+    attendees: List[str] = Field(default_factory=list)
+    description: Optional[str] = None
+    color_tag: str = "blue"  # "blue", "purple", "orange", "green", "red"
+    is_conflict: bool = False
+
+
 class CalendarPayload(BaseModel):
     """I dati esatti per creare o verificare un evento su Google Calendar."""
     title: str
@@ -35,6 +48,7 @@ class CalendarPayload(BaseModel):
     description: str
     location: Optional[str] = "Google Meet"
     alternative_slots_utc: List[datetime] = Field(default_factory=list) # Slot alternativi per il meeting 
+
 
 
 class EmailPayload(BaseModel):

@@ -1,6 +1,15 @@
 from typing import Protocol, List, Optional, Dict, Any
 from datetime import datetime
-from .models import SessionExtractionResult, CalendarPayload, EmailPayload, Contact, KnowledgePayload, TaskPayload
+
+from .models import (
+    SessionExtractionResult,
+    CalendarPayload,
+    CalendarEventItem,
+    EmailPayload,
+    Contact,
+    KnowledgePayload,
+    TaskPayload,
+)
 
 
 class LLMExtractorPort(Protocol):
@@ -12,7 +21,7 @@ class LLMExtractorPort(Protocol):
 
 
 class CalendarServicePort(Protocol):
-    """Contratto per il calendario: controllo disponibilità, ricerca slot liberi e creazione evento."""
+    """Contratto per il calendario: controllo disponibilità, ricerca slot liberi, lettura agenda ed evento."""
     # ritorna True se sono occupato, False altrimenti
     async def check_is_busy(self, start_utc: datetime, end_utc: datetime) -> bool:
         ...
@@ -21,6 +30,10 @@ class CalendarServicePort(Protocol):
     async def find_alternative_slots(
         self, requested_start_utc: datetime, duration_minutes: int, count: int = 3
     ) -> List[datetime]:
+        ...
+
+    # legge gli impegni esistenti in un intervallo di date (per visualizzare l'agenda)
+    async def get_events(self, start_utc: datetime, end_utc: datetime) -> List[CalendarEventItem]:
         ...
 
     # crea l'evento con la chiave
