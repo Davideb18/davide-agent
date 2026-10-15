@@ -46,7 +46,7 @@ class CalendarPayload(BaseModel):
     start_utc: datetime
     end_utc: datetime
     attendees: List[str] = Field(default_factory=list)
-    description: str
+    description: str = ""
     location: Optional[str] = "Google Meet"
     alternative_slots_utc: List[datetime] = Field(default_factory=list) # Slot alternativi per il meeting 
 
@@ -81,7 +81,7 @@ class KnowledgePayload(BaseModel):
 class TaskPayload(BaseModel):
     """I dati per creare o aggiornare una lista di task operativi (To-Do)."""
     task_items: List[str] = Field(default_factory=list)
-    assignee: Optional[str] = "Davide"
+    assignee: Optional[str] = None
     target_project: Optional[str] = None
     deadline_utc: Optional[datetime] = None
 

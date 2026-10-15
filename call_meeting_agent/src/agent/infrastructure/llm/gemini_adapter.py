@@ -61,7 +61,7 @@ class GeminiExtractorAdapter:
         return mapping.get(ext, "audio/mp3")
 
     async def extract_from_audio(
-        self, audio_bytes: bytes, filename: str, anchor_utc: datetime
+        self, audio_bytes: bytes, filename: str, anchor_utc: datetime, user_tz: str = "Europe/Rome"
     ) -> SessionExtractionResult:
         """
         Analizza l'audio con Gemini e cascata automatica di declassazione in caso di sovraccarico (503).
@@ -77,9 +77,9 @@ Il tuo compito è analizzare la registrazione audio allegata ed estrarre le info
 
 INFORMAZIONI TEMPORALI:
 - Timestamp di riferimento attuale (UTC): {anchor_iso}
-- Fuso orario di riferimento: Europe/Rome (CET/CEST)
+- Fuso orario di riferimento locale: {user_tz}
 Tutte le date e gli orari relativi citati nella conversazione (es. "domani alle 15", "martedì prossimo", "tra due ore")
-devono essere calcolati rispetto a questo timestamp e convertiti in formato UTC ISO-8601.
+devono essere calcolati rispetto a questo timestamp e convertiti in formato UTC ISO-8601 considerando il fuso orario {user_tz}.
 
 REGOLE DI ESTRAZIONE:
 1. TRASCRIZIONE: Fornisci una trascrizione fedele e completa della conversazione nel campo raw_transcript.

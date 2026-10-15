@@ -235,3 +235,59 @@ class MacMailService:
         if res.returncode == 0:
             return f"mac_mail_{idempotency_key[:10]}"
         raise RuntimeError(res.stderr or "Errore creazione bozza Apple Mail")
+
+
+class LocalCalendarService:
+    """Implementazione dinamica in memoria di CalendarServicePort (nessun mock preimpostato)."""
+
+    def __init__(self) -> None:
+        self.events: Dict[str, CalendarEventItem] = {}
+
+    async def check_is_busy(self, start_utc: datetime, end_utc: datetime) -> bool:
+        for ev in self.events.values():
+            if start_utc < ev.end_utc and end_utc > ev.start_utc:
+                return True
+        return False
+
+    async def get_events(self, start_utc: datetime, end_utc: datetime) -> List[CalendarEventItem]:
+        return [
+            ev for ev in self.events.values()
+            if ev.start_utc < end_utc and ev.end_utc > start_utc
+        ]
+
+    async def find_alternative_slots(
+        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3
+    ) -> List[datetime]:
+        _, alternatives = await evaluate_calendar_slot(
+            self, requested_start_utc, duration_minutes=duration_minutes, max_alternatives=count
+        )
+        return alternatives
+
+    async def create_event(self, payload: CalendarPayload, idempotency_key: str) -> str:
+        import hashlib
+        event_id = f"evt_{hashlib.sha256(idempotency_key.encode()).hexdigest()[:10]}"
+        self.events[event_id] = CalendarEventItem(
+            id=event_id,
+            title=payload.title,
+            start_utc=payload.start_utc,
+            end_utc=payload.end_utc,
+            location=payload.location,
+            attendees=payload.attendees,
+            description=payload.description,
+            color_tag="blue",
+        )
+        return event_id
+
+
+class LocalEmailService:
+    """Implementazione locale per la persistenza delle bozze email (nessun mock preimpostato)."""
+
+    def __init__(self) -> None:
+        self.drafts: Dict[str, EmailPayload] = {}
+
+    async def create_draft(self, payload: EmailPayload, idempotency_key: str) -> str:
+        import hashlib
+        draft_id = f"draft_{hashlib.sha256(idempotency_key.encode()).hexdigest()[:10]}"
+        self.drafts[draft_id] = payload
+        return draft_id
+

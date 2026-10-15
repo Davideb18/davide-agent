@@ -2,10 +2,16 @@
 sidebar_view.py — Colonna sinistra (Sidebar) del CRM Aria.
 Design pulito, contrasto elevato, zero testi da chatbot AI.
 """
+import uuid
 import streamlit as st
 from src.agent.domain.enums import ActionStatus, ActionType
-from src.agent.domain.models import SessionExtractionResult
-from src.agent.presentation.state import run_async
+from src.agent.domain.models import SessionExtractionResult, Contact
+from src.agent.presentation.state import (
+    run_async,
+    is_calendar_live,
+    is_email_live,
+    COMMON_TIMEZONES,
+)
 
 
 def render_sidebar(session: SessionExtractionResult):
@@ -14,7 +20,7 @@ def render_sidebar(session: SessionExtractionResult):
         # Header Brand
         st.markdown(
             """
-            <div style="padding: 14px 0 16px 0; border-bottom: 1px solid #E1E3EB; margin-bottom: 14px;">
+            <div style="padding: 14px 0 12px 0; border-bottom: 1px solid #E1E3EB; margin-bottom: 12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span style="font-size: 20px;">🎙️</span>
                     <div>
@@ -26,6 +32,29 @@ def render_sidebar(session: SessionExtractionResult):
                         </span>
                     </div>
                 </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── INDICATORI STATO SERVIZI (LIVE VS LOCALE) ───────────────────
+        cal_live = is_calendar_live()
+        mail_live = is_email_live()
+        cal_badge = (
+            '<span class="aria-pill aria-pill-green" style="font-size:10.5px; padding:3px 8px;">🟢 Google Calendar: Connesso</span>'
+            if cal_live else
+            '<span class="aria-pill aria-pill-amber" style="font-size:10.5px; padding:3px 8px;">🟡 Calendar: Locale (No OAuth)</span>'
+        )
+        mail_badge = (
+            '<span class="aria-pill aria-pill-green" style="font-size:10.5px; padding:3px 8px;">🟢 Gmail API: Connesso</span>'
+            if mail_live else
+            '<span class="aria-pill aria-pill-amber" style="font-size:10.5px; padding:3px 8px;">🟡 Email: Bozza Locale</span>'
+        )
+        st.markdown(
+            f"""
+            <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px;">
+                {cal_badge}
+                {mail_badge}
             </div>
             """,
             unsafe_allow_html=True,
@@ -87,15 +116,66 @@ def render_sidebar(session: SessionExtractionResult):
                     border-radius: 16px;
                     padding: 16px;
                     text-align: center;
-                    margin-bottom: 14px;
+                    margin-bottom: 10px;
                 ">
                     <div style="font-size: 26px; margin-bottom: 4px;">👤</div>
                     <h3 style="font-size: 15px; font-weight: 700; color: #1A1A1E; margin: 0;">{ent.raw_name}</h3>
-                    <p style="font-size: 11.5px; color: #6E6E73; margin: 2px 0 0 0;">Interlocutore identificato</p>
+                    <p style="font-size: 11.5px; color: #6E6E73; margin: 2px 0 0 0;">Interlocutore non in rubrica</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+            # Quick Action: Aggiungi a Contatti
+            with st.popover("➕  Aggiungi a Contatti", use_container_width=True):
+                st.markdown("<p style='font-size:13px; font-weight:700; margin-bottom:6px;'>Nuovo Contatto in Rubrica</p>", unsafe_allow_html=True)
+                raw_parts = ent.raw_name.strip().split(maxsplit=1)
+                default_fn = raw_parts[0] if raw_parts else ""
+                default_ln = raw_parts[1] if len(raw_parts) > 1 else ""
+
+                default_comp = ""
+                default_role = ""
+                if ent.context_clues:
+                    default_comp = ent.context_clues[0]
+                    if len(ent.context_clues) > 1:
+                        default_role = ent.context_clues[1]
+
+                # Suggerimento email da bozza email proposta se presente
+                suggested_email = ""
+                for a in session.proposed_actions:
+                    if a.action_type == ActionType.EMAIL_DRAFT and a.email_data and a.email_data.recipient_email:
+                        suggested_email = a.email_data.recipient_email
+                        break
+                if not suggested_email:
+                    slug_fn = default_fn.lower().replace(" ", "")
+                    slug_ln = default_ln.lower().replace(" ", "")
+                    suggested_email = f"{slug_fn}.{slug_ln}@azienda.com" if slug_ln else f"{slug_fn}@azienda.com"
+
+                q_fn = st.text_input("Nome:", value=default_fn, key=f"q_fn_{ent.raw_name}")
+                q_ln = st.text_input("Cognome:", value=default_ln, key=f"q_ln_{ent.raw_name}")
+                q_comp = st.text_input("Azienda:", value=default_comp, key=f"q_comp_{ent.raw_name}")
+                q_role = st.text_input("Ruolo:", value=default_role, key=f"q_role_{ent.raw_name}")
+                q_mail = st.text_input("Email:", value=suggested_email, key=f"q_mail_{ent.raw_name}")
+
+                if st.button("Salva in Rubrica", type="primary", use_container_width=True, key=f"btn_save_cnt_{ent.raw_name}"):
+                    new_contact = Contact(
+                        id=f"cnt_{uuid.uuid4().hex[:8]}",
+                        first_name=q_fn.strip() or ent.raw_name,
+                        last_name=q_ln.strip(),
+                        email=q_mail.strip(),
+                        company=q_comp.strip() or "N/D",
+                        role=q_role.strip() or "Referente",
+                        aliases=[ent.raw_name, q_fn.strip()],
+                        tags=["network", "executive_lead"],
+                        timezone=st.session_state.get("user_timezone", "Europe/Rome"),
+                    )
+                    run_async(st.session_state.repo.add_contact(new_contact))
+                    ent.matched_contact_id = new_contact.id
+                    ent.is_ambiguous = False
+                    st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name} salvato con successo!", icon="👤")
+                    st.rerun()
+
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
         # ── GRIGLIA METRICHE DINAMICHE REALI ────────────────────────────
         elapsed = st.session_state.get("elapsed_seconds", "—")
@@ -194,6 +274,20 @@ def render_sidebar(session: SessionExtractionResult):
                 """,
                 unsafe_allow_html=True,
             )
+
+        # ── IMPOSTAZIONE FUSO ORARIO ─────────────────────────────────────
+        current_tz = st.session_state.get("user_timezone", "Europe/Rome")
+        with st.expander(f"🌐 Fuso Orario: {current_tz}", expanded=False):
+            tz_choice = st.selectbox(
+                "Fuso orario visualizzazione:",
+                options=COMMON_TIMEZONES,
+                index=COMMON_TIMEZONES.index(current_tz) if current_tz in COMMON_TIMEZONES else 0,
+                key="sb_tz_picker",
+                label_visibility="collapsed",
+            )
+            if tz_choice != current_tz:
+                st.session_state.user_timezone = tz_choice
+                st.rerun()
 
         # ── TASTO NUOVA CHIAMATA ─────────────────────────────────────────
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)

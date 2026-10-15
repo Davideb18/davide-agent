@@ -3,7 +3,7 @@
 **Project:** Executive Call & Meeting Operations Agent (Voice-to-Action)  
 **Target:** Preparazione & Live Demo Colloquio Tecnico Trellis (Tech Lead / Principal Engineer track)  
 **Architecture:** Hexagonal Architecture (Ports & Adapters) con State Machine deterministica e Human-in-the-Loop  
-**Location:** `/Users/davide/Desktop/davide-agent/call_meeting_agent/`  
+**Location:** `./call_meeting_agent/`  
 
 ---
 
@@ -74,7 +74,7 @@ flowchart TD
 
 ## 3. Struttura del Progetto (Hexagonal Architecture)
 
-All'interno di `/Users/davide/Desktop/davide-agent/call_meeting_agent/`:
+All'interno della radice di progetto:
 
 ```text
 call_meeting_agent/
@@ -303,7 +303,7 @@ class AuthManager:
 
 ## 7. Deterministic Demo Mode (Demo Readiness)
 
-Per permettere a Davide di condurre il colloquio live anche con connessione debole o senza credenziali Google configurate:
+Per permettere l'esecuzione e il collaudo anche in ambienti isolati:
 - Configurando `DEMO_MODE=true` nel file `.env`, la Dependency Injection carica:
   1. `MockLLM`: Restituisce un payload realistico relativo a una call su quote, commissioni e calendari con contatti noti.
   2. `MockCalendarService`: Simula intenzionalmente un conflitto sull'orario richiesto per mostrare a Filippo il banner di Warning e la risoluzione automatica delle alternative libere.

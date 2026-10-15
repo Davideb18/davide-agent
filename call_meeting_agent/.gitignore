@@ -1,0 +1,24 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Streamlit runtime
+.streamlit/secrets.toml
+
+# Environment variables & sensitive credentials
+.env
+data/token.json
+data/credentials.json
+
+# Local runtime logs and temporary audio files
+*.log
+data/*.wav
+data/*.mp3
+data/*.m4a
+data/latest_session.json
+
+# OS files
+.DS_Store
+Thumbs.db

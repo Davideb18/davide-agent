@@ -292,20 +292,3 @@ class SqliteRepository:
                 return row is not None
 
 
-# SCRIPT DI COLLAUDO IMMEDIATO
-if __name__ == "__main__":
-    import asyncio
-
-    async def test():
-        repo = SqliteRepository("data/test_call_agent.db")
-        await repo.init_db()
-        await repo.seed_default_contacts()
-        contacts = await repo.get_contacts()
-        print("=" * 60)
-        print("DATABASE COLLAUDATO CON SUCCESSO! 🎉")
-        print(f"Contatti caricati in rubrica: {len(contacts)}")
-        for c in contacts:
-            print(f"- {c.first_name} {c.last_name} ({c.company}): {c.email} [Tags: {c.tags}]")
-        print("=" * 60)
-
-    asyncio.run(test())

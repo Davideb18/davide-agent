@@ -206,16 +206,113 @@ input[type="text"]:focus, textarea:focus {
     font-weight: 600 !important;
 }
 
-/* --- MICROFONO AUDIO INPUT --- */
+/* --- MICROFONO AUDIO INPUT (Apple Voice Memos Style) --- */
 [data-testid="stAudioInput"],
 [data-testid="stAudioInput"] > div {
     background: #FFFFFF !important;
     border: 1px solid #D2D6DC !important;
-    border-radius: 14px !important;
-    padding: 14px !important;
+    border-radius: 16px !important;
+    padding: 16px 20px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04) !important;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+[data-testid="stAudioInput"]:hover,
+[data-testid="stAudioInput"] > div:hover {
+    border-color: #0066CC !important;
+    box-shadow: 0 4px 16px rgba(0, 102, 204, 0.08) !important;
 }
 [data-testid="stAudioInput"] * {
     color: #1A1A1E !important;
+}
+[data-testid="stAudioInput"] button {
+    cursor: pointer !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease !important;
+}
+[data-testid="stAudioInput"] button:hover {
+    transform: scale(1.08) !important;
+}
+[data-testid="stAudioInput"] button[aria-label*="Stop"],
+[data-testid="stAudioInput"] button[aria-label*="Ferma"] {
+    background: #FF3B30 !important;
+    border-radius: 50% !important;
+    color: #FFFFFF !important;
+    animation: aria-rec-pulse 1.4s infinite cubic-bezier(0.66, 0, 0, 1) !important;
+}
+[data-testid="stAudioInput"] button[aria-label*="Stop"]:hover,
+[data-testid="stAudioInput"] button[aria-label*="Ferma"]:hover {
+    transform: scale(1.14) !important;
+    background: #E02E24 !important;
+}
+
+@keyframes aria-rec-pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.65);
+    }
+    70% {
+        box-shadow: 0 0 0 14px rgba(255, 59, 48, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(255, 59, 48, 0);
+    }
+}
+
+/* --- FIX CURSORE SELECTBOX & MENU A TENDINA (Zero I-Beam / Puntatore Nativo) --- */
+[data-baseweb="select"],
+[data-baseweb="select"] *,
+[data-testid="stSelectbox"],
+[data-testid="stSelectbox"] *,
+[data-testid="stSelectbox"] div,
+div[role="combobox"],
+div[role="combobox"] *,
+[data-baseweb="popover"],
+[data-baseweb="popover"] *,
+[data-baseweb="menu"],
+[data-baseweb="menu"] *,
+ul[role="listbox"],
+ul[role="listbox"] *,
+li[role="option"],
+li[role="option"] *,
+div[role="listbox"],
+div[role="listbox"] * {
+    cursor: pointer !important;
+}
+[data-baseweb="select"] input,
+[data-testid="stSelectbox"] input,
+div[role="combobox"] input {
+    cursor: pointer !important;
+    caret-color: transparent !important;
+    user-select: none !important;
+}
+[data-baseweb="select"] svg,
+[data-testid="stSelectbox"] svg {
+    cursor: pointer !important;
+    pointer-events: none;
+}
+
+/* --- ST.PILLS & SLOTS FULL WIDTH WRAPPING --- */
+[data-testid="stPills"] {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    width: 100% !important;
+}
+[data-testid="stPills"] button {
+    cursor: pointer !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    text-align: center !important;
+    padding: 8px 14px !important;
+    border-radius: 10px !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    line-height: 1.35 !important;
+    min-height: 40px !important;
+    flex: 1 1 auto !important;
+    transition: all 0.15s ease !important;
+}
+[data-testid="stPills"] button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06) !important;
 }
 
 /* --- EXPANDER (Trascrizione) --- */
@@ -231,6 +328,7 @@ input[type="text"]:focus, textarea:focus {
     border-bottom: 1px solid #E1E3EB !important;
     padding: 12px 16px !important;
     font-weight: 600 !important;
+    cursor: pointer !important;
 }
 [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
     background: #FFFFFF !important;

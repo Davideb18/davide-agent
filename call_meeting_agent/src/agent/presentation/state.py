@@ -1,6 +1,6 @@
 """
 state.py — Inizializzazione singleton dei servizi e session state.
-Nessun mock per LLM: Gemini reale con cascata di declassazione automatica.
+Esecuzione 100% reale: Gemini multimodale e integrazione Google Calendar/Gmail.
 """
 import os
 import asyncio
@@ -18,15 +18,67 @@ _project_root = Path(__file__).resolve().parent.parent.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from zoneinfo import ZoneInfo
 from src.agent.infrastructure.database.sqlite_repo import SqliteRepository
-import importlib
-import src.agent.infrastructure.google.mock_google as _mock_google_mod
-_mock_google_mod = importlib.reload(_mock_google_mod)
-from src.agent.infrastructure.google.mock_google import MockCalendarService, MockEmailService
+from src.agent.infrastructure.google.live_google import (
+    LiveCalendarService,
+    LiveEmailService,
+    LocalCalendarService,
+    LocalEmailService,
+)
 from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
 from src.agent.infrastructure.llm.gemini_adapter import GeminiExtractorAdapter
 from src.agent.application.process_session import ProcessSessionUseCase
 from src.agent.application.commit_action import CommitActionUseCase
+
+COMMON_TIMEZONES = [
+    "Europe/Rome",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Zurich",
+    "America/New_York",
+    "America/Chicago",
+    "America/Los_Angeles",
+    "Asia/Tokyo",
+    "Asia/Dubai",
+    "UTC",
+]
+
+
+def detect_system_timezone() -> str:
+    """Rileva in modo resiliente il fuso orario del sistema con fallback su Europe/Rome."""
+    tz_env = os.environ.get("TZ")
+    if tz_env:
+        try:
+            ZoneInfo(tz_env)
+            return tz_env
+        except Exception:
+            pass
+
+    if os.path.exists("/etc/localtime"):
+        try:
+            real_path = os.path.realpath("/etc/localtime")
+            if "zoneinfo/" in real_path:
+                iana_name = real_path.split("zoneinfo/")[-1]
+                ZoneInfo(iana_name)
+                return iana_name
+        except Exception:
+            pass
+
+    return "Europe/Rome"
+
+
+def is_calendar_live() -> bool:
+    """Verifica se il servizio di calendario è connesso all'API Google live."""
+    cal = st.session_state.get("calendar")
+    return isinstance(cal, LiveCalendarService)
+
+
+def is_email_live() -> bool:
+    """Verifica se il servizio email è connesso all'API Gmail live."""
+    mail = st.session_state.get("email")
+    return isinstance(mail, LiveEmailService)
 
 
 def run_async(coro):
@@ -43,44 +95,41 @@ def run_async(coro):
 
 def init():
     """Inizializza tutti i servizi reali una sola volta per sessione (con aggiornamento dinamico)."""
+    # 1. Calendario: Google Calendar Live se autenticato, altrimenti Calendario Locale dinamico
+    _required_cal_methods = ("get_events", "check_is_busy", "find_alternative_slots", "create_event")
     if os.path.exists("data/token.json"):
         try:
-            from src.agent.infrastructure.google.live_google import LiveCalendarService, LiveEmailService
             if not isinstance(st.session_state.get("calendar"), LiveCalendarService):
                 st.session_state.calendar = LiveCalendarService()
+        except Exception:
+            pass
+
+    if "calendar" not in st.session_state or not all(hasattr(st.session_state.calendar, m) for m in _required_cal_methods):
+        st.session_state.calendar = LocalCalendarService()
+
+    # 2. Email: Gmail Live se autenticato, altrimenti Servizio Email Locale dinamico
+    if os.path.exists("data/token.json"):
+        try:
             if not isinstance(st.session_state.get("email"), LiveEmailService):
                 st.session_state.email = LiveEmailService()
         except Exception:
             pass
 
-    import importlib
-    import src.agent.infrastructure.google.mock_google as mock_mod
-    mock_mod = importlib.reload(mock_mod)
-
-    _required_cal_methods = ("get_events", "check_is_busy", "find_alternative_slots", "create_event")
-    if "calendar" not in st.session_state or not all(hasattr(st.session_state.calendar, m) for m in _required_cal_methods):
-        st.session_state.calendar = mock_mod.MockCalendarService()
-
     if "email" not in st.session_state or not hasattr(st.session_state.email, "create_draft"):
-        from src.agent.infrastructure.google.live_google import LiveEmailService
-        if os.path.exists("data/token.json"):
-            st.session_state.email = LiveEmailService()
-        else:
-            from src.agent.infrastructure.google.live_google import MacMailService
-            st.session_state.email = MacMailService()
+        st.session_state.email = LocalEmailService()
 
     if "aria_initialized" not in st.session_state:
-        # 1. Database SQLite Locale
+        # 3. Database SQLite Locale
         repo = SqliteRepository("data/call_agent.db")
         run_async(repo.init_db())
         run_async(repo.seed_default_contacts())
         st.session_state.repo = repo
 
-        # 3. Obsidian Knowledge Vault
-        vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "/Users/davide/Desktop/Personal_project/Second_Brain")
+        # 4. Obsidian Knowledge Vault (Percorso locale di progetto)
+        vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
         st.session_state.knowledge = ObsidianAdapter(vault_path=vault_path)
 
-        # 4. LLM: Gemini Reale con Cascata di Declassazione Automatica (No Mock)
+        # 5. LLM: Gemini Reale con Cascata di Declassazione Automatica
         gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not gemini_key:
             raise ValueError("GEMINI_API_KEY non trovata nel file .env!")
@@ -94,7 +143,10 @@ def init():
         st.session_state.elapsed_seconds = None
         st.session_state.audio_bytes = None
         st.session_state.audio_filename = None
+        st.session_state.user_timezone = detect_system_timezone()
         st.session_state.aria_initialized = True
+    elif "user_timezone" not in st.session_state:
+        st.session_state.user_timezone = detect_system_timezone()
 
 
 def get_orchestrator() -> ProcessSessionUseCase:
@@ -117,7 +169,7 @@ def get_committer() -> CommitActionUseCase:
 
 
 def connect_live_google() -> bool:
-    """Attiva la connessione live a Google Calendar e Gmail se non ancora effettuata."""
+    """Attiva la connessione live a Google Calendar e Gmail se credenziali presenti."""
     try:
         from src.agent.infrastructure.google.live_google import (
             get_google_credentials,
@@ -132,4 +184,3 @@ def connect_live_google() -> bool:
     except Exception:
         pass
     return False
-

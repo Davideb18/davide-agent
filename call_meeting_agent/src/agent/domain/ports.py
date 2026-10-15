@@ -15,7 +15,7 @@ from .models import (
 class LLMExtractorPort(Protocol):
     """Contratto per il motore AI: riceve l'audio e restituisce i dati strutturati."""
     async def extract_from_audio(
-        self, audio_bytes: bytes, filename: str, anchor_utc: datetime
+        self, audio_bytes: bytes, filename: str, anchor_utc: datetime, user_tz: str = "Europe/Rome"
     ) -> SessionExtractionResult:
         ...
 

@@ -33,19 +33,6 @@ if _css_path.exists():
 # Inizializzazione singleton dei servizi applicativi
 init()
 
-# Auto-caricamento sessione analizzata (es. Via Zocco 7) se disponibile
-if st.session_state.get("current_session") is None:
-    latest_file = Path("data/latest_session.json")
-    if latest_file.exists():
-        try:
-            from src.agent.domain.models import SessionExtractionResult
-            st.session_state.current_session = SessionExtractionResult.model_validate_json(
-                latest_file.read_text(encoding="utf-8")
-            )
-            st.session_state.elapsed_seconds = 4.82
-            st.session_state.audio_filename = "Via Zocco 7.m4a"
-        except Exception:
-            pass
 
 # Routing principale con error boundary di sicurezza
 try:

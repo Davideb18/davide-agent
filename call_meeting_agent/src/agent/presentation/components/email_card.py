@@ -6,7 +6,7 @@ from typing import Optional
 import streamlit as st
 from src.agent.domain.enums import ActionStatus
 from src.agent.domain.models import ProposedAction
-from src.agent.presentation.state import run_async
+from src.agent.presentation.state import run_async, is_email_live
 
 
 def render_email_card(mail_action: ProposedAction, know_action: Optional[ProposedAction], committer):
@@ -15,10 +15,23 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
     if not data:
         return
 
+    email_live = is_email_live()
+    service_badge = (
+        '<span class="aria-pill aria-pill-green" style="font-size:10.5px;">🟢 Gmail Live</span>'
+        if email_live else
+        '<span class="aria-pill aria-pill-amber" style="font-size:10.5px;">🟡 Bozza Locale</span>'
+    )
+
     with st.container(border=True):
         st.markdown(
-            "<h3 style='font-size:18px; font-weight:700; color:#1A1A1E; margin:0 0 14px 0; letter-spacing:-0.02em;'>"
-            "✉️ Email di Follow-up</h3>",
+            f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="font-size:18px; font-weight:700; color:#1A1A1E; margin:0; letter-spacing:-0.02em;">
+                    ✉️ Email di Follow-up
+                </h3>
+                {service_badge}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
@@ -62,14 +75,30 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
             )
             st.markdown(titlebar_html, unsafe_allow_html=True)
 
-            st.caption(f"A: **{data.recipient_email}**")
-            data.subject = st.text_input("Oggetto:", value=data.subject, key=f"subj_{mail_action.id}")
+            is_exec = (mail_action.status == ActionStatus.EXECUTED)
+            col_to_email, col_to_name = st.columns([1.5, 1])
+            with col_to_email:
+                data.recipient_email = st.text_input(
+                    "A (Email destinatario):",
+                    value=data.recipient_email,
+                    key=f"recip_email_{mail_action.id}",
+                    disabled=is_exec,
+                )
+            with col_to_name:
+                data.recipient_name = st.text_input(
+                    "Nome destinatario:",
+                    value=data.recipient_name or "",
+                    key=f"recip_name_{mail_action.id}",
+                    disabled=is_exec,
+                )
+
+            data.subject = st.text_input("Oggetto:", value=data.subject, key=f"subj_{mail_action.id}", disabled=is_exec)
             data.body_markdown = st.text_area(
-                "Testo del messaggio:", value=data.body_markdown, height=145, key=f"body_{mail_action.id}"
+                "Testo del messaggio:", value=data.body_markdown, height=145, key=f"body_{mail_action.id}", disabled=is_exec
             )
 
-            if mail_action.status != ActionStatus.EXECUTED:
-                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            if not is_exec:
+                st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
                 c1, c2 = st.columns([1.6, 1])
                 with c1:
                     if st.button("✉️  Salva Bozza in Gmail", key=f"btn_mail_{mail_action.id}", type="primary", use_container_width=True):
@@ -81,5 +110,40 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                     if st.button("Scarta", key=f"btn_mail_reject_{mail_action.id}", use_container_width=True):
                         run_async(committer.reject_action(mail_action))
                         st.rerun()
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
             else:
-                st.markdown('<span class="aria-pill aria-pill-green">✓ Bozza Salvata in Gmail</span>', unsafe_allow_html=True)
+                st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: #F0FDF4;
+                        border: 1px solid #BBF7D0;
+                        border-radius: 14px;
+                        padding: 16px 20px;
+                        margin-top: 10px;
+                        margin-bottom: 24px;
+                        box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+                    ">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                            <span class="aria-pill aria-pill-green" style="font-size:11px; font-weight:700;">
+                                ✓ Bozza Creata con Successo
+                            </span>
+                            <span style="font-size:11px; color:#15803D; font-family:monospace; font-weight:600;">
+                                ID: #{mail_action.id}
+                            </span>
+                        </div>
+                        <p style="font-size:12.5px; color:#166534; margin:0 0 4px 0; font-weight:600;">
+                            Destinatario: {data.recipient_name} &lt;{data.recipient_email}&gt;
+                        </p>
+                        <p style="font-size:12px; color:#15803D; margin:0; line-height:1.45;">
+                            Oggetto: <b>{data.subject}</b><br/>
+                            Bozza archiviata in modo sicuro nel client di posta per revisione e invio finale. Nessuna email è stata trasmessa automaticamente.
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    # Spazio generoso per distanziare la card email dalla card successiva
+    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+

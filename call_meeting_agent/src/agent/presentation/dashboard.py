@@ -29,10 +29,6 @@ def _render_summary_banner(session: SessionExtractionResult):
             if st.button("🎙️ Nuova Registrazione", key="btn_new_audio_banner", type="secondary", use_container_width=True):
                 for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds"]:
                     st.session_state[k] = None
-                from pathlib import Path
-                latest_p = Path("data/latest_session.json")
-                if latest_p.exists():
-                    latest_p.unlink()
                 st.rerun()
 
         # Badge partecipanti
@@ -85,6 +81,7 @@ def render(session: SessionExtractionResult):
     for cal_act in cal_actions:
         try:
             render_calendar_card(cal_act, committer)
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Errore visualizzazione calendario: {e}")
 
@@ -92,6 +89,7 @@ def render(session: SessionExtractionResult):
     for mail_act in mail_actions:
         try:
             render_email_card(mail_act, know_act, committer)
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Errore visualizzazione bozza email: {e}")
 
@@ -99,5 +97,6 @@ def render(session: SessionExtractionResult):
     if task_act or know_act:
         try:
             render_tasks_card(task_act, know_act, committer)
+            st.markdown("<div style='height: 32px;'></div>", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Errore visualizzazione task / Obsidian: {e}")

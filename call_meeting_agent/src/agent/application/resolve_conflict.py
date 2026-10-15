@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
+from zoneinfo import ZoneInfo
 from ..domain.ports import CalendarServicePort
 
 
@@ -10,6 +11,7 @@ async def evaluate_calendar_slot(
     working_hour_start: int = 9,
     working_hour_end: int = 18,
     max_alternatives: int = 3,
+    user_tz: str = "Europe/Rome",
 ) -> Tuple[bool, List[datetime]]:
     """
     Verifica se lo slot orario richiesto è disponibile su Google Calendar.
@@ -27,6 +29,12 @@ async def evaluate_calendar_slot(
         # Perfetto: nessun conflitto, orario libero!
         return False, []
 
+    # Risoluzione fuso orario utente per calcolo orario lavorativo
+    try:
+        tz = ZoneInfo(user_tz)
+    except Exception:
+        tz = timezone.utc
+
     # 2. Conflitto rilevato! Avviamo la Sliding Window deterministica
     alternative_slots: List[datetime] = []
     current_candidate = requested_start_utc + timedelta(minutes=30)
@@ -37,11 +45,18 @@ async def evaluate_calendar_slot(
     while current_candidate < limit_scan and len(alternative_slots) < max_alternatives:
         candidate_end = current_candidate + timedelta(minutes=duration_minutes)
 
+        # Proiezione dell'orario candidato nel fuso orario locale dell'utente
+        if current_candidate.tzinfo is None:
+            cand_utc = current_candidate.replace(tzinfo=timezone.utc)
+        else:
+            cand_utc = current_candidate
+        cand_local = cand_utc.astimezone(tz)
+
         # Filtro orari lavorativi: esclude la notte (es. prima delle 9:00 o dopo le 18:00)
         # e salta i weekend (sabato = 5, domenica = 6)
         is_working_hour = (
-            working_hour_start <= current_candidate.hour < working_hour_end
-            and current_candidate.weekday() < 5
+            working_hour_start <= cand_local.hour < working_hour_end
+            and cand_local.weekday() < 5
         )
 
         if is_working_hour:

@@ -9,21 +9,19 @@ from ...domain.models import KnowledgePayload, TaskPayload
 
 class ObsidianAdapter:
     """
-    Adattatore per Obsidian Second Brain:
-    Riconosce automaticamente la struttura del Second Brain personale di Davide
-    (ACTIVITY, IDENTITY, KNOWLEDGE, Home.md) e organizza in modo pulito e logico:
-      - ACTIVITY/Meetings/ : Note dettagliate degli incontri con metadati e backlink.
-      - PEOPLE/            : Dossier viventi e schede contatto arricchite nel tempo.
-      - Projects/Tasks.md  : Checklist operative delle cose da fare concordate.
+    Adattatore per Knowledge Base e Second Brain (Obsidian):
+    Organizza in modo pulito e logico:
+      - ACTIVITY/Meetings/ o meetings/ : Note dettagliate degli incontri con metadati e backlink.
+      - PEOPLE/ o contacts/            : Dossier viventi e schede contatto arricchite nel tempo.
+      - Projects/Tasks.md o Tasks.md   : Checklist operative delle cose da fare concordate.
     """
 
     def __init__(self, vault_path: Optional[str] = None) -> None:
         raw_path = vault_path or os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
         self.vault_path = Path(raw_path).expanduser().resolve()
 
-        # Rilevamento intelligente della struttura del Second Brain
+        # Rilevamento della struttura del Vault
         if (self.vault_path / "ACTIVITY").exists():
-            # Second Brain personale di Davide!
             self.meetings_dir = self.vault_path / "ACTIVITY" / "Meetings"
             self.contacts_dir = self.vault_path / "PEOPLE"
         else:
@@ -182,13 +180,13 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
             with open(tasks_file, "w", encoding="utf-8") as f:
                 f.write(initial)
 
-        assignee = payload.assignee or "Davide"
+        assignee_tag = f" (@{payload.assignee})" if payload.assignee else ""
         proj_str = f" [Progetto: [[{payload.target_project}]]]" if payload.target_project else ""
         header = f"\n### 🗓️ Task concordati il {now_str} (Rif: [[{meeting_ref}]]{proj_str})\n"
 
         items_str = ""
         for item in payload.task_items:
-            items_str += f"- [ ] {item.strip()} (@{assignee})\n"
+            items_str += f"- [ ] {item.strip()}{assignee_tag}\n"
 
         with open(tasks_file, "a", encoding="utf-8") as f:
             f.write(header + items_str)
