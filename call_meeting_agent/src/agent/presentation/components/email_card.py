@@ -47,7 +47,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 unsafe_allow_html=True,
             )
 
-            if know_action and know_action.knowledge_data:
+            if know_action and know_action.knowledge_data and know_action.knowledge_data.bullet_insights:
                 st.markdown(
                     "<p style='font-size:11.5px; font-weight:600; color:#6E6E73; text-transform:uppercase; letter-spacing:0.05em; margin:14px 0 6px 0;'>Punti Principali:</p>",
                     unsafe_allow_html=True,

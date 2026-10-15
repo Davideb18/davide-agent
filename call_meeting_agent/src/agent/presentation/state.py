@@ -19,6 +19,9 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.agent.infrastructure.database.sqlite_repo import SqliteRepository
+import importlib
+import src.agent.infrastructure.google.mock_google as _mock_google_mod
+_mock_google_mod = importlib.reload(_mock_google_mod)
 from src.agent.infrastructure.google.mock_google import MockCalendarService, MockEmailService
 from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
 from src.agent.infrastructure.llm.gemini_adapter import GeminiExtractorAdapter
@@ -40,10 +43,31 @@ def run_async(coro):
 
 def init():
     """Inizializza tutti i servizi reali una sola volta per sessione (con aggiornamento dinamico)."""
+    if os.path.exists("data/token.json"):
+        try:
+            from src.agent.infrastructure.google.live_google import LiveCalendarService, LiveEmailService
+            if not isinstance(st.session_state.get("calendar"), LiveCalendarService):
+                st.session_state.calendar = LiveCalendarService()
+            if not isinstance(st.session_state.get("email"), LiveEmailService):
+                st.session_state.email = LiveEmailService()
+        except Exception:
+            pass
+
+    import importlib
+    import src.agent.infrastructure.google.mock_google as mock_mod
+    mock_mod = importlib.reload(mock_mod)
+
     _required_cal_methods = ("get_events", "check_is_busy", "find_alternative_slots", "create_event")
-    if "calendar" in st.session_state and not all(hasattr(st.session_state.calendar, m) for m in _required_cal_methods):
-        from src.agent.infrastructure.google.mock_google import MockCalendarService
-        st.session_state.calendar = MockCalendarService()
+    if "calendar" not in st.session_state or not all(hasattr(st.session_state.calendar, m) for m in _required_cal_methods):
+        st.session_state.calendar = mock_mod.MockCalendarService()
+
+    if "email" not in st.session_state or not hasattr(st.session_state.email, "create_draft"):
+        from src.agent.infrastructure.google.live_google import LiveEmailService
+        if os.path.exists("data/token.json"):
+            st.session_state.email = LiveEmailService()
+        else:
+            from src.agent.infrastructure.google.live_google import MacMailService
+            st.session_state.email = MacMailService()
 
     if "aria_initialized" not in st.session_state:
         # 1. Database SQLite Locale
@@ -51,21 +75,6 @@ def init():
         run_async(repo.init_db())
         run_async(repo.seed_default_contacts())
         st.session_state.repo = repo
-
-        # 2. Google Workspace (Live se token OAuth disponibile)
-        if os.path.exists("data/token.json"):
-            try:
-                from src.agent.infrastructure.google.live_google import LiveCalendarService, LiveEmailService
-                st.session_state.calendar = LiveCalendarService()
-                st.session_state.email = LiveEmailService()
-            except Exception:
-                from src.agent.infrastructure.google.mock_google import MockCalendarService, MockEmailService
-                st.session_state.calendar = MockCalendarService()
-                st.session_state.email = MockEmailService()
-        else:
-            from src.agent.infrastructure.google.mock_google import MockCalendarService, MockEmailService
-            st.session_state.calendar = MockCalendarService()
-            st.session_state.email = MockEmailService()
 
         # 3. Obsidian Knowledge Vault
         vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "/Users/davide/Desktop/Personal_project/Second_Brain")

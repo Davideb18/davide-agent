@@ -212,3 +212,26 @@ class LiveEmailService:
             .execute()
         )
         return draft.get("id", "unknown_draft_id")
+
+
+class MacMailService:
+    """Implementazione reale nativa macOS Apple Mail (zero token, zero mock)."""
+
+    async def create_draft(self, payload: EmailPayload, idempotency_key: str) -> str:
+        import subprocess
+        escaped_subj = payload.subject.replace('"', '\\"')
+        escaped_body = payload.body_markdown.replace('"', '\\"').replace("\n", "\\n")
+        escaped_email = payload.recipient_email.replace('"', '\\"')
+        script = f'''
+        tell application "Mail"
+            set newMsg to (make new outgoing message with properties {{subject:"{escaped_subj}", content:"{escaped_body}", visible:true}})
+            tell newMsg
+                make new to recipient at end of to recipients with properties {{address:"{escaped_email}"}}
+            end tell
+            save newMsg
+        end tell
+        '''
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            return f"mac_mail_{idempotency_key[:10]}"
+        raise RuntimeError(res.stderr or "Errore creazione bozza Apple Mail")

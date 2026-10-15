@@ -72,6 +72,28 @@ def _render_event_card(event: CalendarEventItem, is_conflict_target: bool = Fals
             st.markdown(f"**Luogo / Collegamento:** {event.location}")
 
 
+def _fetch_calendar_events(cal_service, range_start: datetime, range_end: datetime) -> List[CalendarEventItem]:
+    """Recupera la lista eventi in modo resiliente e sicuro senza mai bloccare la UI."""
+    if cal_service and hasattr(cal_service, "get_events"):
+        try:
+            return run_async(cal_service.get_events(range_start, range_end)) or []
+        except Exception:
+            pass
+
+    # Se cal_service non ha get_events (es. istanza stale di una sessione Streamlit precedente)
+    try:
+        import importlib
+        import src.agent.infrastructure.google.mock_google as mock_mod
+        mock_mod = importlib.reload(mock_mod)
+        fresh_cal = mock_mod.MockCalendarService()
+        st.session_state.calendar = fresh_cal
+        return run_async(fresh_cal.get_events(range_start, range_end)) or []
+    except Exception:
+        pass
+
+    return []
+
+
 def render_calendar_card(action: ProposedAction, committer):
     """Renderizza l'interfaccia Apple Calendar con visualizzazione agenda e gestione conflitti."""
     data = action.calendar_data
@@ -81,9 +103,14 @@ def render_calendar_card(action: ProposedAction, committer):
     cal_service = st.session_state.get("calendar", None)
     _required_methods = ("get_events", "check_is_busy", "find_alternative_slots", "create_event")
     if cal_service is None or not all(hasattr(cal_service, m) for m in _required_methods):
-        from src.agent.infrastructure.google.mock_google import MockCalendarService
-        cal_service = MockCalendarService()
-        st.session_state.calendar = cal_service
+        try:
+            import importlib
+            import src.agent.infrastructure.google.mock_google as mock_mod
+            mock_mod = importlib.reload(mock_mod)
+            cal_service = mock_mod.MockCalendarService()
+            st.session_state.calendar = cal_service
+        except Exception:
+            pass
 
     with st.container(border=True):
         # ── HEADER CARD ──────────────────────────────────────────────────────
@@ -115,10 +142,8 @@ def render_calendar_card(action: ProposedAction, committer):
         range_start = datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, tzinfo=timezone.utc)
         range_end = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 23, 59, 59, tzinfo=timezone.utc)
 
-        # Recupero impegni dal Calendar Service (Google Calendar Live o Mock Realistico)
-        events: List[CalendarEventItem] = []
-        if cal_service:
-            events = run_async(cal_service.get_events(range_start, range_end)) or []
+        # Recupero impegni dal Calendar Service (Google Calendar Live o Mock Realistico con Fallback Sicuro)
+        events: List[CalendarEventItem] = _fetch_calendar_events(cal_service, range_start, range_end)
 
         # Raggruppamento per giorno
         events_yesterday = [e for e in events if e.start_utc.date() == yesterday]
@@ -183,7 +208,8 @@ def render_calendar_card(action: ProposedAction, committer):
 
                 # Selettore Slot Alternativi
                 alt_options = []
-                for i, slot in enumerate(data.alternative_slots_utc):
+                slots_list = data.alternative_slots_utc or []
+                for i, slot in enumerate(slots_list):
                     tag = "Consigliato" if i == 0 else "Disponibile"
                     alt_options.append(f"🟢 {slot.strftime('%H:%M')} UTC ({tag})")
                 alt_options.append("🕒 Personalizza Orario...")
@@ -198,7 +224,7 @@ def render_calendar_card(action: ProposedAction, committer):
                 duration = data.end_utc - data.start_utc
 
                 if chosen_slot_str == "🕒 Personalizza Orario...":
-                    col_h, col_m = st.columns(2)
+                    col_h, _ = st.columns([1, 1])
                     with col_h:
                         custom_time = st.time_input(
                             "Orario desiderato (UTC):",
@@ -211,7 +237,8 @@ def render_calendar_card(action: ProposedAction, committer):
                     )
                 else:
                     slot_index = alt_options.index(chosen_slot_str)
-                    new_start = data.alternative_slots_utc[slot_index]
+                    if slot_index < len(slots_list):
+                        new_start = slots_list[slot_index]
 
                 if new_start:
                     data.start_utc = new_start

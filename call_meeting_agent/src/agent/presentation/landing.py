@@ -89,10 +89,9 @@ def render():
                 )
                 if mic is not None:
                     raw_bytes = mic.getvalue() if hasattr(mic, "getvalue") else mic.read()
-                    if raw_bytes and raw_bytes != st.session_state.get("audio_bytes"):
+                    if raw_bytes:
                         st.session_state.audio_bytes = raw_bytes
                         st.session_state.audio_filename = "registrazione_microfono.wav"
-                        st.rerun()
 
             # ── TAB 2: FILE DROPZONE ──────────────────────────────────
             with tab_file:
@@ -104,10 +103,9 @@ def render():
                 )
                 if uploaded is not None:
                     raw_bytes = uploaded.getvalue() if hasattr(uploaded, "getvalue") else uploaded.read()
-                    if raw_bytes and raw_bytes != st.session_state.get("audio_bytes"):
+                    if raw_bytes:
                         st.session_state.audio_bytes = raw_bytes
                         st.session_state.audio_filename = uploaded.name
-                        st.rerun()
 
             # ── ANTEPRIMA AUDIO CARICATO (SE PRESENTE) ────────────────
             has_audio = bool(st.session_state.get("audio_bytes"))

@@ -104,7 +104,7 @@ def render_sidebar(session: SessionExtractionResult):
         status_color = "#8A4800" if has_conflict else "#15692E"
 
         # Conteggi dinamici reali da session.proposed_actions
-        tasks_count = sum(len(a.task_data.task_items) for a in session.proposed_actions if a.task_data)
+        tasks_count = sum(len(a.task_data.task_items or []) for a in session.proposed_actions if a.task_data)
         appointments_count = sum(1 for a in session.proposed_actions if a.calendar_data)
 
         st.markdown(

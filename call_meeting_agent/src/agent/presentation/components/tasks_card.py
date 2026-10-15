@@ -31,7 +31,7 @@ def render_tasks_card(task_action: Optional[ProposedAction], know_action: Option
                 unsafe_allow_html=True,
             )
             if task_action and task_action.task_data:
-                txt_items = "\n".join(task_action.task_data.task_items)
+                txt_items = "\n".join(task_action.task_data.task_items or [])
                 edited_tasks = st.text_area(
                     "Compiti concordati:",
                     value=txt_items,
@@ -61,9 +61,9 @@ def render_tasks_card(task_action: Optional[ProposedAction], know_action: Option
             contact_note = "PEOPLE/Contatto.md"
             if know_action and know_action.knowledge_data:
                 def _slug(t: str) -> str:
-                    return re.sub(r"[-\s]+", "_", re.sub(r"[^\w\s-]", "", t.lower().strip()))
-                t_slug = _slug(know_action.knowledge_data.title) or "meeting"
-                p_slug = _slug(know_action.knowledge_data.target_person_name) or "contatto"
+                    return re.sub(r"[-\s]+", "_", re.sub(r"[^\w\s-]", "", (t or "").lower().strip()))
+                t_slug = _slug(know_action.knowledge_data.title or "") or "meeting"
+                p_slug = _slug(know_action.knowledge_data.target_person_name or "") or "contatto"
                 meeting_note = f"ACTIVITY/Meetings/{t_slug}.md"
                 contact_note = f"PEOPLE/{p_slug}.md"
 

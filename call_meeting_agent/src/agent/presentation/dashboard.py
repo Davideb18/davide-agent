@@ -57,28 +57,43 @@ def _render_summary_banner(session: SessionExtractionResult):
 def render(session: SessionExtractionResult):
     """Renderizza la dashboard CRM completa."""
     # Sidebar sinistra informativa
-    render_sidebar(session)
+    try:
+        render_sidebar(session)
+    except Exception as e:
+        st.sidebar.error(f"Errore sidebar: {e}")
 
     # Committer per eseguire le azioni
     committer = get_committer()
 
     # Identificazione delle azioni proposte
-    cal_act  = next((a for a in session.proposed_actions if a.action_type == ActionType.CALENDAR_EVENT), None)
-    mail_act = next((a for a in session.proposed_actions if a.action_type == ActionType.EMAIL_DRAFT), None)
+    cal_actions = [a for a in session.proposed_actions if a.action_type == ActionType.CALENDAR_EVENT]
+    mail_actions = [a for a in session.proposed_actions if a.action_type == ActionType.EMAIL_DRAFT]
     know_act = next((a for a in session.proposed_actions if a.action_type == ActionType.KNOWLEDGE_NOTE), None)
     task_act = next((a for a in session.proposed_actions if a.action_type == ActionType.TASK_TODO), None)
 
     # 1. Banner riepilogo in alto
-    _render_summary_banner(session)
+    try:
+        _render_summary_banner(session)
+    except Exception as e:
+        st.error(f"Errore banner riepilogo: {e}")
 
-    # 2. Card Calendario & Timeline Conflitti
-    if cal_act:
-        render_calendar_card(cal_act, committer)
+    # 2. Card Calendario & Timeline Conflitti (Apple Calendar)
+    for cal_act in cal_actions:
+        try:
+            render_calendar_card(cal_act, committer)
+        except Exception as e:
+            st.error(f"Errore visualizzazione calendario: {e}")
 
     # 3. Card Email Follow-up (macOS Mail Window)
-    if mail_act:
-        render_email_card(mail_act, know_act, committer)
+    for mail_act in mail_actions:
+        try:
+            render_email_card(mail_act, know_act, committer)
+        except Exception as e:
+            st.error(f"Errore visualizzazione bozza email: {e}")
 
     # 4. Card Task & Second Brain (Obsidian Vault)
     if task_act or know_act:
-        render_tasks_card(task_act, know_act, committer)
+        try:
+            render_tasks_card(task_act, know_act, committer)
+        except Exception as e:
+            st.error(f"Errore visualizzazione task / Obsidian: {e}")

@@ -33,8 +33,15 @@ if _css_path.exists():
 # Inizializzazione singleton dei servizi applicativi
 init()
 
-# Routing principale
-if st.session_state.get("current_session") is None:
-    landing.render()
-else:
-    dashboard.render(st.session_state.current_session)
+# Routing principale con error boundary di sicurezza
+try:
+    if st.session_state.get("current_session") is None:
+        landing.render()
+    else:
+        dashboard.render(st.session_state.current_session)
+except Exception as e:
+    st.error(f"Si è verificato un errore durante la renderizzazione: {e}")
+    if st.button("🔄 Torna alla Schermata Principale", type="primary", key="btn_global_reset"):
+        for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds"]:
+            st.session_state[k] = None
+        st.rerun()
