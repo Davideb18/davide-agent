@@ -1,6 +1,7 @@
+import re
 from datetime import datetime, timezone
-from typing import List, Optional
-from pydantic import BaseModel, Field, EmailStr
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from .enums import ActionStatus, ActionType, IntentCategory
 
 
@@ -53,11 +54,19 @@ class CalendarPayload(BaseModel):
 
 class EmailPayload(BaseModel):
     """I dati esatti per generare la bozza su Gmail."""
-    recipient_email: EmailStr # email del destinatario
+    recipient_email: str  # email del destinatario pulita
     recipient_name: str
     subject: str
-    body_markdown: str # il testo formattato in markdown
+    body_markdown: str  # il testo formattato in markdown
     cc: List[str] = Field(default_factory=list)
+
+    @field_validator("recipient_email", mode="before")
+    @classmethod
+    def clean_recipient_email(cls, v: Any) -> str:
+        if isinstance(v, str):
+            return re.sub(r"\s+", "", v).lower()
+        return str(v)
+
 
 class KnowledgePayload(BaseModel):
     """I dati esatti per creare o aggiornare una nota nel Second Brain (Obsidian)."""

@@ -29,6 +29,10 @@ def _render_summary_banner(session: SessionExtractionResult):
             if st.button("🎙️ Nuova Registrazione", key="btn_new_audio_banner", type="secondary", use_container_width=True):
                 for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds"]:
                     st.session_state[k] = None
+                from pathlib import Path
+                latest_p = Path("data/latest_session.json")
+                if latest_p.exists():
+                    latest_p.unlink()
                 st.rerun()
 
         # Badge partecipanti

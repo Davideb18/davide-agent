@@ -67,25 +67,17 @@ def render_tasks_card(task_action: Optional[ProposedAction], know_action: Option
                 meeting_note = f"ACTIVITY/Meetings/{t_slug}.md"
                 contact_note = f"PEOPLE/{p_slug}.md"
 
-            st.markdown(
-                f"""
-                <div style="background: #FFFFFF; border: 1px solid #D2D2D7; border-radius: 14px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
-                    <p style="font-size: 13.5px; font-weight: 700; color: #1A1A1E; margin: 0 0 4px 0;">🧠 Dossier Riunione & Backlink</p>
-                    <p style="font-size: 11.5px; color: #55555A; margin: 0 0 10px 0; line-height: 1.45;">
-                        Crea automaticamente le schede collegate nel tuo archivio Obsidian:
-                    </p>
-                    <div style="display:flex; flex-direction:column; gap:6px;">
-                        <span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">
-                            📁 {meeting_note}
-                        </span>
-                        <span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">
-                            📁 {contact_note}
-                        </span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            obsidian_html = (
+                f'<div style="background:#FFFFFF; border:1px solid #D2D2D7; border-radius:14px; padding:14px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,0.03);">'
+                f'<p style="font-size:13.5px; font-weight:700; color:#1A1A1E; margin:0 0 4px 0;">🧠 Dossier Riunione & Backlink</p>'
+                f'<p style="font-size:11.5px; color:#55555A; margin:0 0 10px 0; line-height:1.45;">Crea automaticamente le schede collegate nel tuo archivio Obsidian:</p>'
+                f'<div style="display:flex; flex-direction:column; gap:6px;">'
+                f'<span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">📁 {meeting_note}</span>'
+                f'<span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">📁 {contact_note}</span>'
+                f'</div>'
+                f'</div>'
             )
+            st.markdown(obsidian_html, unsafe_allow_html=True)
             if know_action and know_action.status != ActionStatus.EXECUTED:
                 if st.button("🧠  Sincronizza nel Vault Obsidian", key=f"btn_sync_obsidian_{know_action.id}", use_container_width=True):
                     ok, _ = run_async(committer.execute_action(know_action))

@@ -30,22 +30,14 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 "<p style='font-size:11.5px; font-weight:600; color:#6E6E73; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;'>Destinatario</p>",
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                f"""
-                <div style="background: #FFFFFF; border: 1px solid #E1E3EB; border-radius: 14px; padding: 16px;">
-                    <p style="font-size: 14px; font-weight: 700; color: #1A1A1E; margin: 0 0 2px 0;">
-                        {data.recipient_name}
-                    </p>
-                    <p style="font-size: 12px; color: #0066CC; font-weight: 500; margin: 0 0 8px 0;">
-                        {data.recipient_email}
-                    </p>
-                    <p style="font-size: 12px; color: #3A3A40; margin: 0; line-height: 1.45;">
-                        Bozza generata automaticamente sulla base degli accordi presi durante la conversazione.
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            recipient_html = (
+                f'<div style="background:#FFFFFF; border:1px solid #E1E3EB; border-radius:14px; padding:16px;">'
+                f'<p style="font-size:14px; font-weight:700; color:#1A1A1E; margin:0 0 2px 0;">{data.recipient_name}</p>'
+                f'<p style="font-size:12px; color:#0066CC; font-weight:500; margin:0 0 8px 0;">{data.recipient_email}</p>'
+                f'<p style="font-size:12px; color:#3A3A40; margin:0; line-height:1.45;">Bozza generata automaticamente sulla base degli accordi presi durante la conversazione.</p>'
+                f'</div>'
             )
+            st.markdown(recipient_html, unsafe_allow_html=True)
 
             if know_action and know_action.knowledge_data and know_action.knowledge_data.bullet_insights:
                 st.markdown(
@@ -60,19 +52,15 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
 
         # Finestra a destra
         with col_right:
-            st.markdown(
-                """
-                <div class="mac-titlebar" style="border-radius: 14px 14px 0 0;">
-                    <span class="mac-dot mac-dot-red"></span>
-                    <span class="mac-dot mac-dot-yellow"></span>
-                    <span class="mac-dot mac-dot-green"></span>
-                    <span style="font-size:12px; font-weight:600; color:#1A1A1E; margin-left:8px;">
-                        Gmail — Nuovo Messaggio
-                    </span>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            titlebar_html = (
+                '<div class="mac-titlebar" style="border-radius:14px 14px 0 0;">'
+                '<span class="mac-dot mac-dot-red"></span>'
+                '<span class="mac-dot mac-dot-yellow"></span>'
+                '<span class="mac-dot mac-dot-green"></span>'
+                '<span style="font-size:12px; font-weight:600; color:#1A1A1E; margin-left:8px;">Gmail — Nuovo Messaggio</span>'
+                '</div>'
             )
+            st.markdown(titlebar_html, unsafe_allow_html=True)
 
             st.caption(f"A: **{data.recipient_email}**")
             data.subject = st.text_input("Oggetto:", value=data.subject, key=f"subj_{mail_action.id}")
