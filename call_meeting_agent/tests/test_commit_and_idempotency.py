@@ -338,3 +338,58 @@ async def test_adapter_failure_preserves_state_and_logs_error(
     assert fail_action.status == ActionStatus.EXECUTED
     assert "creato con successo" in retry_msg.lower()
 
+
+def test_commit_across_multiple_event_loops(tmp_path):
+    """
+    Simula rerun successivi di Streamlit (o invocazioni da thread worker diversi)
+    in cui CommitActionUseCase vive come singleton in session_state ma ogni chiamata
+    viene eseguita all'interno di un nuovo event loop (asyncio.run).
+    Certifica:
+      - 0 errori 'RuntimeError: ... is bound to a different event loop'
+      - Persistenza corretta dell'idempotenza tra cicli di loop distinti
+    """
+    import asyncio
+    from src.agent.infrastructure.database.sqlite_repo import SqliteRepository
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+    from src.agent.application.commit_action import CommitActionUseCase
+
+    db_path = str(tmp_path / "multi_loop.db")
+    repo = SqliteRepository(db_path)
+    asyncio.run(repo.init_db())
+
+    vault_path = str(tmp_path / "vault")
+    obsidian = ObsidianAdapter(vault_path=vault_path)
+    committer = CommitActionUseCase(
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=repo,
+    )
+
+    action = ProposedAction(
+        id="act_multiloop_001",
+        session_id="ses_multiloop_001",
+        action_type=ActionType.EMAIL_DRAFT,
+        status=ActionStatus.PROPOSED,
+        email_data=EmailPayload(
+            recipient_name="Filippo",
+            recipient_email="filippo@trellis.so",
+            subject="Multi Loop Test",
+            body_markdown="Test",
+        ),
+        idempotency_key="idemp_multiloop_001",
+    )
+
+    # Invocazione 1 su Loop A (creato da asyncio.run)
+    ok1, msg1 = asyncio.run(committer.execute_action(action))
+    assert ok1 is True
+    assert action.status == ActionStatus.EXECUTED
+
+    # Invocazione 2 su Loop B (completamente separato dal precedente)
+    # Senza la protezione loop-aware, questo solleverebbe RuntimeError sul lock di Loop A!
+    ok2, msg2 = asyncio.run(committer.execute_action(action))
+    assert ok2 is False
+    assert "già eseguita" in msg2.lower()
+
+

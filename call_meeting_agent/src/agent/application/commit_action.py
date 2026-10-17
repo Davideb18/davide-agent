@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from typing import Optional, Dict, Any, Tuple
 from ..domain.models import ProposedAction, CalendarPayload, EmailPayload, KnowledgePayload, TaskPayload
 from ..domain.enums import ActionStatus, ActionType
@@ -27,7 +28,26 @@ class CommitActionUseCase:
         self.knowledge = knowledge_service
         self.repo = repository
         self.reminders = reminders_service
-        self._key_locks: Dict[str, asyncio.Lock] = {}
+        self._key_locks: Dict[Tuple[int, str], asyncio.Lock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _get_loop_key_lock(self, key: str) -> asyncio.Lock:
+        """
+        Restituisce un lock asincrono associato univocamente alla coppia (event_loop, idempotency_key).
+        Garantisce immunità assoluta a 'RuntimeError: ... is bound to a different event loop'
+        durante rerun successivi di Streamlit o invocazioni su loop multipli.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            loop_id = id(loop)
+        except RuntimeError:
+            loop_id = 0
+
+        composite_key = (loop_id, key)
+        with self._locks_guard:
+            if composite_key not in self._key_locks:
+                self._key_locks[composite_key] = asyncio.Lock()
+            return self._key_locks[composite_key]
 
     async def execute_action(
         self, action: ProposedAction, user_modified_payload: Optional[Dict[str, Any]] = None
@@ -37,11 +57,9 @@ class CommitActionUseCase:
         Ritorna:
             (success: bool, message: str)
         """
-        # Concurrency Lock per chiave di idempotenza per neutralizzare finestre di race condition (TOCTOU)
+        # Concurrency Lock per chiave di idempotenza isolato per Event Loop
         key = action.idempotency_key or action.id
-        if key not in self._key_locks:
-            self._key_locks[key] = asyncio.Lock()
-        key_lock = self._key_locks[key]
+        key_lock = self._get_loop_key_lock(key)
 
         async with key_lock:
             # 1. CONTROLLO DI IDEMPOTENZA (Anti-Doppio Click con protezione da Race Condition)

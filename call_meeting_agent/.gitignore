@@ -19,6 +19,14 @@ data/*.mp3
 data/*.m4a
 data/latest_session.json
 
+# Local SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/call_agent.db
+
 # OS files
 .DS_Store
 Thumbs.db
+

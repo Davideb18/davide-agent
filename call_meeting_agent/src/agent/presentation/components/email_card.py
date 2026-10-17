@@ -161,7 +161,52 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                     unsafe_allow_html=True,
                 )
 
+            # Badge informativo se destinatario privo di email (bozza aperta legittima)
+            curr_email_val = (st.session_state.get(email_key) or data.recipient_email or "").strip()
+            if not curr_email_val:
+                open_draft_msg = (
+                    "Open draft (no email address attached — ready for manual review)"
+                    if is_en else
+                    "Bozza aperta (nessun indirizzo email associato — pronta per revisione manuale)"
+                )
+                st.markdown(
+                    f"""
+                    <div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:6px 10px; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:12px;">📝</span>
+                        <span style="font-size:11.5px; color:#B45309; font-weight:600;">{open_draft_msg}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
             is_exec = (mail_action.status == ActionStatus.EXECUTED)
+
+            # ── SELETTORE RAPIDO DALLA RUBRICA (AUTO-BINDING) ─────────────────
+            contacts_with_email = [c for c in saved_contacts if (c.email or "").strip()]
+            if contacts_with_email and not is_exec:
+                placeholder_opt = "— Mantieni destinatario attuale —" if not is_en else "— Keep current recipient —"
+                contact_labels = [placeholder_opt] + [
+                    f"👤 {c.first_name} {c.last_name}".strip() + f" <{c.email}>" for c in contacts_with_email
+                ]
+                selected_opt = st.selectbox(
+                    "Scegli dalla rubrica contatti:",
+                    options=contact_labels,
+                    key=f"quick_contact_pick_{mail_action.id}",
+                    help="Seleziona un contatto per compilare automaticamente nome e indirizzo email.",
+                )
+                if selected_opt and selected_opt != placeholder_opt:
+                    clean_choice = selected_opt.replace("👤 ", "")
+                    picked_email = clean_choice.split("<")[-1].rstrip(">").strip()
+                    picked_name = clean_choice.split("<")[0].strip()
+                    if st.session_state.get(email_key) != picked_email:
+                        st.session_state[email_key] = picked_email
+                        st.session_state[name_key] = picked_name
+                        st.session_state[prev_name_key] = picked_name
+                        data.recipient_email = picked_email
+                        data.recipient_name = picked_name
+                        st.toast(f"Contatto rubrica associato: {picked_name} ({picked_email})", icon="👤")
+                        st.rerun()
+
             col_to_email, col_to_name = st.columns([1.4, 1.1])
             with col_to_email:
                 email_input_lbl = "To (Recipient email):" if is_en else "A (Email destinatario):"
@@ -208,8 +253,20 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
                 c1, c2 = st.columns([1.6, 1])
                 with c1:
-                    save_btn_lbl = "✉️  Save Draft in Gmail" if is_en else "✉️  Salva Bozza in Gmail"
+                    save_btn_lbl = "✉️  Save Draft" if is_en else ("✉️  Salva Bozza in Gmail" if email_live else "✉️  Salva Bozza")
                     if st.button(save_btn_lbl, key=f"btn_mail_{mail_action.id}", type="primary", use_container_width=True):
+                        # Auto-salvataggio dell'indirizzo email inserito nel contatto rubrica se precedentemente privo
+                        if repo and new_email and "@" in new_email:
+                            clean_target_name = (new_name or "").lower().strip()
+                            for sc in saved_contacts:
+                                sc_full = f"{sc.first_name} {sc.last_name}".lower().strip()
+                                sc_aliases = [a.lower().strip() for a in (sc.aliases or [])]
+                                if (clean_target_name in (sc_full, sc.first_name.lower().strip()) or clean_target_name in sc_aliases) and not (sc.email or "").strip():
+                                    sc.email = new_email.strip()
+                                    run_async(repo.add_contact(sc))
+                                    st.toast(f"Email di {sc.first_name} salvata automaticamente in rubrica!", icon="💾")
+                                    break
+
                         ok, msg = run_async(committer.execute_action(mail_action, user_modified_payload=data.model_dump(mode="json")))
                         if ok:
                             st.toast(msg, icon="✉️")
@@ -222,6 +279,11 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
             else:
                 st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                recip_display = (
+                    f"{data.recipient_name} &lt;{data.recipient_email}&gt;"
+                    if (data.recipient_email or "").strip() else
+                    f"{data.recipient_name} (Bozza aperta — nessun indirizzo email)"
+                )
                 st.markdown(
                     f"""
                     <div style="
@@ -242,7 +304,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                             </span>
                         </div>
                         <p style="font-size:12.5px; color:#166534; margin:0 0 4px 0; font-weight:600;">
-                            Destinatario: {data.recipient_name} &lt;{data.recipient_email}&gt;
+                            Destinatario: {recip_display}
                         </p>
                         <p style="font-size:12px; color:#15803D; margin:0; line-height:1.45;">
                             Oggetto: <b>{data.subject}</b><br/>
@@ -252,6 +314,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                     """,
                     unsafe_allow_html=True,
                 )
+
 
     # Spazio generoso per distanziare la card email dalla card successiva
     st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
