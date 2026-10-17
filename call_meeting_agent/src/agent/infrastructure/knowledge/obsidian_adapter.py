@@ -2,14 +2,16 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Set, Tuple
 
 from ...domain.models import (
     KnowledgePayload,
     TaskPayload,
     PersonHistorySummary,
     PersonInteractionRecord,
+    SessionExtractionResult,
 )
+from ...domain.enums import ActionType, ActionStatus
 
 
 class ObsidianAdapter:
@@ -404,7 +406,7 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
 
                 # 1. Cerca nel frontmatter YAML (es. language: it / lingua: italiano / preferred_language: en)
                 yaml_matches = re.findall(
-                    r"(?i)^(?:language|lingua|preferred_language|lingua_preferita)\s*:\s*[\"']?([a-zA-Z\s]+)[\"']?",
+                    r"(?i)^(?:language|lingua|preferred_language|lingua_preferita)\s*:\s*[\"']?([a-zA-Z_-]+)[\"']?",
                     content,
                     re.MULTILINE,
                 )
@@ -424,5 +426,263 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                 continue
 
         return None
+
+    async def get_vault_graph_data(
+        self, active_session: Optional[SessionExtractionResult] = None
+    ) -> Dict[str, Any]:
+        """
+        Costruisce la topologia di rete del Second Brain (Nodi & Collegamenti) per la visualizzazione D3.js:
+          - Nodi Persone (da PEOPLE/ o contacts/) con colore #007AFF
+          - Nodi Riunioni (da ACTIVITY/Meetings/ o meetings/) con colore #5856D6
+          - Nodi Contesto/Aziende/Tag (da WikiLinks estratti) con colore #34C759
+          - Nodo Sessione Attiva (focal point della sessione aperta) con colore #FF9500
+          - Calibrazione dinamica delle dimensioni (val) basata sul grado di connessione
+          - Tracciamento dello stato di sincronizzazione (PROPOSED vs EXECUTED)
+        """
+        nodes_dict: Dict[str, Dict[str, Any]] = {}
+        links_set: Set[Tuple[str, str, str]] = set()
+
+        def add_node(
+            node_id: str,
+            name: str,
+            category: str,
+            color: str,
+            base_val: int = 12,
+            details: str = "",
+            is_current_session: bool = False,
+            sync_status: Optional[str] = None,
+        ):
+            if node_id not in nodes_dict:
+                nodes_dict[node_id] = {
+                    "id": node_id,
+                    "name": name,
+                    "category": category,
+                    "color": color,
+                    "val": base_val,
+                    "details": details,
+                    "is_current_session": is_current_session,
+                    "sync_status": sync_status,
+                    "degree": 0,
+                }
+            else:
+                if is_current_session:
+                    nodes_dict[node_id]["is_current_session"] = True
+                    nodes_dict[node_id]["color"] = color
+                    nodes_dict[node_id]["category"] = category
+                    nodes_dict[node_id]["val"] = max(nodes_dict[node_id]["val"], base_val)
+                if sync_status:
+                    nodes_dict[node_id]["sync_status"] = sync_status
+
+        def add_link(source_id: str, target_id: str, label: str = "collegamento"):
+            if source_id == target_id:
+                return
+            s, t = sorted([source_id, target_id])
+            links_set.add((s, t, label))
+
+        # ── 1. SCANSIONE VAULT SU DISCO (PEOPLE / CONTACTS) ─────────────────
+        if self.contacts_dir.exists():
+            for f in self.contacts_dir.glob("*.md"):
+                if f.name.startswith("."):
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                name_match = re.search(r'(?i)^name\s*:\s*["\']?([^"\']+)["\']?', content, re.MULTILINE)
+                person_name = name_match.group(1).strip() if name_match else f.stem.replace("_", " ")
+                person_id = f"person_{self._slugify(person_name)}"
+
+                add_node(
+                    node_id=person_id,
+                    name=person_name,
+                    category="person",
+                    color="#007AFF",
+                    base_val=14,
+                    details="Dossier Contatto",
+                )
+
+                wikilinks = re.findall(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]", content)
+                for raw_target, alias in wikilinks:
+                    target_clean = raw_target.strip()
+                    if not target_clean or target_clean == person_name:
+                        continue
+                    if "meeting" in target_clean.lower() or "/" in target_clean:
+                        display_title = alias.strip() if alias else Path(target_clean).stem.replace("_", " ")
+                        mid = f"meeting_{self._slugify(display_title)}"
+                        add_node(
+                            node_id=mid,
+                            name=display_title,
+                            category="meeting",
+                            color="#5856D6",
+                            base_val=12,
+                            details="Meeting Archiviato",
+                            sync_status="SYNCED",
+                        )
+                        add_link(person_id, mid, label="partecipante")
+                    else:
+                        ctx_id = f"ctx_{self._slugify(target_clean)}"
+                        add_node(
+                            node_id=ctx_id,
+                            name=target_clean,
+                            category="context",
+                            color="#34C759",
+                            base_val=10,
+                            details="Contesto / Relazione",
+                        )
+                        add_link(person_id, ctx_id, label="relazione")
+
+        # ── 2. SCANSIONE VAULT SU DISCO (MEETINGS) ───────────────────────────
+        if self.meetings_dir.exists():
+            for f in self.meetings_dir.glob("*.md"):
+                if f.name.startswith("."):
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                title_match = re.search(r'(?i)^title\s*:\s*["\']?([^"\']+)["\']?', content, re.MULTILINE)
+                meeting_title = title_match.group(1).strip() if title_match else f.stem.replace("_", " ")
+                meeting_id = f"meeting_{self._slugify(meeting_title)}"
+
+                add_node(
+                    node_id=meeting_id,
+                    name=meeting_title,
+                    category="meeting",
+                    color="#5856D6",
+                    base_val=12,
+                    details="Nota Meeting Archiviata",
+                    sync_status="SYNCED",
+                )
+
+                part_match = re.search(r'(?i)^participant\s*:\s*["\']?\[\[([^\]]+)\]\]["\']?', content, re.MULTILINE)
+                if part_match:
+                    pname = part_match.group(1).strip()
+                    pid = f"person_{self._slugify(pname)}"
+                    add_node(
+                        node_id=pid,
+                        name=pname,
+                        category="person",
+                        color="#007AFF",
+                        base_val=14,
+                        details="Dossier Contatto",
+                    )
+                    add_link(meeting_id, pid, label="partecipante")
+
+                wikilinks = re.findall(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]", content)
+                for raw_target, alias in wikilinks:
+                    target_clean = raw_target.strip()
+                    if not target_clean or (part_match and target_clean == part_match.group(1).strip()):
+                        continue
+                    ctx_id = f"ctx_{self._slugify(target_clean)}"
+                    add_node(
+                        node_id=ctx_id,
+                        name=target_clean,
+                        category="context",
+                        color="#34C759",
+                        base_val=10,
+                        details="Topic / Progetto",
+                    )
+                    add_link(meeting_id, ctx_id, label="topic")
+
+        # ── 3. FUSIONE CON LA SESSIONE ATTIVA LIVE ───────────────────────────
+        if active_session:
+            sess_id = f"session_{active_session.session_id}"
+            raw_summary = active_session.summary or "Allineamento Operativo"
+            display_title = raw_summary[:28] + ("..." if len(raw_summary) > 28 else "")
+
+            know_act = next(
+                (a for a in active_session.proposed_actions if a.action_type == ActionType.KNOWLEDGE_NOTE),
+                None,
+            )
+            is_synced = know_act is not None and getattr(know_act, "status", None) == ActionStatus.EXECUTED
+            sync_status = "EXECUTED" if is_synced else "PROPOSED"
+            status_desc = "Sincronizzato nel Vault" if is_synced else "In attesa di sync"
+
+            add_node(
+                node_id=sess_id,
+                name=display_title,
+                category="session",
+                color="#FF9500",
+                base_val=18,
+                details=f"Sessione Attiva ({status_desc})",
+                is_current_session=True,
+                sync_status=sync_status,
+            )
+
+            for ent in (active_session.entities or []):
+                pname = (ent.raw_name or "").strip()
+                if not pname:
+                    continue
+                pid = f"person_{self._slugify(pname)}"
+                add_node(
+                    node_id=pid,
+                    name=pname,
+                    category="person",
+                    color="#007AFF",
+                    base_val=14,
+                    details="Interlocutore Rilevato",
+                )
+                add_link(sess_id, pid, label="interlocutore")
+
+            if know_act and know_act.knowledge_data:
+                kd = know_act.knowledge_data
+                for b in (kd.backlinks or []):
+                    b_clean = b.strip()
+                    if not b_clean:
+                        continue
+                    cid = f"ctx_{self._slugify(b_clean)}"
+                    add_node(
+                        node_id=cid,
+                        name=b_clean,
+                        category="context",
+                        color="#34C759",
+                        base_val=11,
+                        details="Argomento Chiave",
+                    )
+                    add_link(sess_id, cid, label="argomento")
+
+                if kd.target_person_name:
+                    t_name = kd.target_person_name.strip()
+                    t_id = f"person_{self._slugify(t_name)}"
+                    add_node(
+                        node_id=t_id,
+                        name=t_name,
+                        category="person",
+                        color="#007AFF",
+                        base_val=14,
+                        details="Target Dossier",
+                    )
+                    add_link(sess_id, t_id, label="dossier")
+
+        # ── 4. FALLBACK ZERO-CRASH SE IL GRAFO È TOTALMENTE VUOTO ────────────
+        if not nodes_dict:
+            add_node("hub_aria", "Aria Knowledge Hub", "session", "#FF9500", 18, "Nodo Centrale", is_current_session=True)
+            add_node("ctx_network", "Network & Relazioni", "person", "#007AFF", 14, "Rubrica Persone")
+            add_node("ctx_meetings", "Storico Riunioni", "meeting", "#5856D6", 13, "Meeting Notes")
+            add_node("ctx_projects", "Progetti & Tasks", "context", "#34C759", 12, "Task Operativi")
+            add_link("hub_aria", "ctx_network", "connette")
+            add_link("hub_aria", "ctx_meetings", "organizza")
+            add_link("hub_aria", "ctx_projects", "traccia")
+
+        # ── 5. CALCOLO GRADO DI CONNESSIONE E DIMENSIONAMENTO DINAMICO ──────
+        final_links = []
+        for s, t, label in links_set:
+            if s in nodes_dict and t in nodes_dict:
+                nodes_dict[s]["degree"] += 1
+                nodes_dict[t]["degree"] += 1
+                final_links.append({"source": s, "target": t, "label": label})
+
+        for n in nodes_dict.values():
+            deg = n["degree"]
+            n["val"] = n["val"] + min(deg * 2, 10)
+            if deg > 0 and not n["is_current_session"]:
+                n["details"] = f"{n['details']} ({deg} connessioni)"
+
+        return {
+            "nodes": list(nodes_dict.values()),
+            "links": final_links,
+        }
 
 

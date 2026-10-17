@@ -10,6 +10,7 @@ from src.agent.presentation.components.sidebar_view import render_sidebar
 from src.agent.presentation.components.calendar_card import render_calendar_card
 from src.agent.presentation.components.email_card import render_email_card
 from src.agent.presentation.components.tasks_card import render_tasks_card
+from src.agent.presentation.components.graph_card import render_graph_card
 
 
 def _render_summary_banner(session: SessionExtractionResult):
@@ -93,10 +94,18 @@ def render(session: SessionExtractionResult):
         except Exception as e:
             st.error(f"Errore visualizzazione bozza email: {e}")
 
-    # 4. Card Task & Second Brain (Obsidian Vault)
+    # 4. Grafo Relazionale Interattivo Second Brain (D3.js)
+    try:
+        render_graph_card(session)
+        st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Errore visualizzazione grafo Second Brain: {e}")
+
+    # 5. Card Task & Second Brain (Obsidian Vault)
     if task_act or know_act:
         try:
             render_tasks_card(task_act, know_act, committer)
             st.markdown("<div style='height: 32px;'></div>", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Errore visualizzazione task / Obsidian: {e}")
+

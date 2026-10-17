@@ -149,5 +149,12 @@ class KnowledgeServicePort(Protocol):
     async def get_user_profile_language(self) -> Optional[str]:
         ...
 
+    # Costruisce la topologia del Grafo di Conoscenza del Second Brain per la visualizzazione D3.js
+    async def get_vault_graph_data(
+        self, active_session: Optional[SessionExtractionResult] = None
+    ) -> Dict[str, Any]:
+        ...
+
+
 
 
