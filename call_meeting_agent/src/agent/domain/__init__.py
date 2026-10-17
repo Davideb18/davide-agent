@@ -9,6 +9,8 @@ from .models import (
     TaskPayload,
     ProposedAction,
     SessionExtractionResult,
+    PersonInteractionRecord,
+    PersonHistorySummary,
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     "TaskPayload",
     "ProposedAction",
     "SessionExtractionResult",
+    "PersonInteractionRecord",
+    "PersonHistorySummary",
 ]

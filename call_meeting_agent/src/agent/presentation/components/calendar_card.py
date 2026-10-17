@@ -12,28 +12,21 @@ from src.agent.domain.enums import ActionStatus, ActionType
 from src.agent.domain.models import ProposedAction, CalendarEventItem
 from src.agent.presentation.state import run_async, is_calendar_live
 
-WEEKDAYS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
-WEEKDAYS_SHORT_IT = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
-WEEKDAYS_FULL_IT = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
-MONTHS_SHORT_IT = [
-    "Gen", "Feb", "Mar", "Apr", "Mag", "Giu",
-    "Lug", "Ago", "Set", "Ott", "Nov", "Dic"
-]
-MONTHS_IT = [
-    "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
-    "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
-]
-
-WEEKDAYS_SHORT_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-WEEKDAYS_FULL_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-MONTHS_SHORT_EN = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-]
-MONTHS_EN = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-]
+from src.agent.domain.datetime_utils import (
+    WEEKDAYS_LOWER_IT as WEEKDAYS_IT,
+    WEEKDAYS_SHORT_IT,
+    WEEKDAYS_FULL_IT,
+    MONTHS_SHORT_IT,
+    MONTHS_FULL_IT as MONTHS_IT,
+    WEEKDAYS_SHORT_EN,
+    WEEKDAYS_FULL_EN,
+    MONTHS_SHORT_EN,
+    MONTHS_FULL_EN as MONTHS_EN,
+    format_localized_slot,
+    format_full_localized_slot,
+    resolve_timezone,
+    is_english as check_is_english,
+)
 
 
 def _is_english_session() -> bool:
@@ -42,19 +35,14 @@ def _is_english_session() -> bool:
     if not session:
         return False
     lang = getattr(session, "detected_language", "it") or "it"
-    return str(lang).lower().startswith("en")
+    return check_is_english(str(lang))
 
 
 def _format_slot_label(dt: datetime) -> str:
     """Formatta un datetime nella lingua della sessione (italiano o inglese)."""
-    if _is_english_session():
-        w = WEEKDAYS_SHORT_EN[dt.weekday()]
-        m = MONTHS_SHORT_EN[dt.month - 1]
-        return f"{w} {dt.day} {m} at {dt.strftime('%H:%M')}"
-    else:
-        w = WEEKDAYS_SHORT_IT[dt.weekday()]
-        m = MONTHS_SHORT_IT[dt.month - 1]
-        return f"{w} {dt.day} {m} ore {dt.strftime('%H:%M')}"
+    user_tz = st.session_state.get("user_timezone", "Europe/Rome")
+    lang = "en" if _is_english_session() else "it"
+    return format_localized_slot(dt, user_tz=user_tz, lang=lang)
 
 
 def _sync_calendar_change_to_email(action_id: str, new_slot_str: str) -> None:
@@ -99,11 +87,7 @@ def _sync_calendar_change_to_email(action_id: str, new_slot_str: str) -> None:
 
 def _get_local_tz() -> ZoneInfo:
     """Recupera in modo dinamico il fuso orario impostato nella sessione utente."""
-    tz_str = st.session_state.get("user_timezone", "Europe/Rome")
-    try:
-        return ZoneInfo(tz_str)
-    except Exception:
-        return ZoneInfo("Europe/Rome")
+    return resolve_timezone(st.session_state.get("user_timezone", "Europe/Rome"))
 
 
 def _to_local(dt: datetime, tz: Optional[ZoneInfo] = None) -> datetime:

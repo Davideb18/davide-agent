@@ -1,5 +1,6 @@
 import os
 import base64
+import threading
 from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -18,29 +19,53 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
 ]
 
+_CREDENTIALS_LOCK = threading.Lock()
+_CACHED_CREDS: Optional[Credentials] = None
+
 
 def get_google_credentials(
     credentials_path: str = "data/credentials.json",
     token_path: str = "data/token.json",
 ) -> Optional[Credentials]:
-    """Gestisce il flusso OAuth 2.0 per accedere all'account Google personale."""
-    creds = None
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    """Gestisce il flusso OAuth 2.0 per accedere all'account Google personale in modo thread-safe."""
+    global _CACHED_CREDS
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(credentials_path):
-                return None
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-            creds = flow.run_local_server(port=0)
+    # 1. Fast path: token in cache ancora valido (zero lock overhead)
+    if _CACHED_CREDS and _CACHED_CREDS.valid:
+        return _CACHED_CREDS
 
-        with open(token_path, "w", encoding="utf-8") as token:
-            token.write(creds.to_json())
+    # 2. Concurrency-Safe Refresh & Load con Double-Checked Locking
+    with _CREDENTIALS_LOCK:
+        if _CACHED_CREDS and _CACHED_CREDS.valid:
+            return _CACHED_CREDS
 
-    return creds
+        creds = None
+        if os.path.exists(token_path):
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            except Exception:
+                creds = None
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception:
+                    creds = None
+
+            if not creds or not creds.valid:
+                if not os.path.exists(credentials_path):
+                    return None
+                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+
+            if creds and creds.valid:
+                os.makedirs(os.path.dirname(os.path.abspath(token_path)), exist_ok=True)
+                with open(token_path, "w", encoding="utf-8") as token_file:
+                    token_file.write(creds.to_json())
+
+        _CACHED_CREDS = creds
+        return _CACHED_CREDS
 
 
 class LiveCalendarService:
@@ -204,10 +229,14 @@ class LiveEmailService:
 
     async def create_draft(self, payload: EmailPayload, idempotency_key: str) -> str:
         message = MIMEText(payload.body_markdown, "plain", "utf-8")
-        message["to"] = payload.recipient_email
+        clean_recipient = (payload.recipient_email or "").strip()
+        if clean_recipient:
+            message["to"] = clean_recipient
         message["subject"] = payload.subject
         if payload.cc:
-            message["cc"] = ", ".join(payload.cc)
+            clean_ccs = [c.strip() for c in payload.cc if c.strip()]
+            if clean_ccs:
+                message["cc"] = ", ".join(clean_ccs)
 
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         draft_body = {"message": {"raw": encoded_message}}
@@ -228,13 +257,21 @@ class MacMailService:
         import subprocess
         escaped_subj = payload.subject.replace('"', '\\"')
         escaped_body = payload.body_markdown.replace('"', '\\"').replace("\n", "\\n")
-        escaped_email = payload.recipient_email.replace('"', '\\"')
-        script = f'''
-        tell application "Mail"
-            set newMsg to (make new outgoing message with properties {{subject:"{escaped_subj}", content:"{escaped_body}", visible:true}})
+        escaped_email = (payload.recipient_email or "").strip().replace('"', '\\"')
+
+        # Genera la clausola destinatario SOLO se l'email non è vuota
+        recipient_clause = ""
+        if escaped_email:
+            recipient_clause = f'''
             tell newMsg
                 make new to recipient at end of to recipients with properties {{address:"{escaped_email}"}}
             end tell
+            '''
+
+        script = f'''
+        tell application "Mail"
+            set newMsg to (make new outgoing message with properties {{subject:"{escaped_subj}", content:"{escaped_body}", visible:true}})
+            {recipient_clause}
             save newMsg
         end tell
         '''

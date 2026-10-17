@@ -19,6 +19,7 @@ from ..domain.ports import (
     KnowledgeServicePort,
     RepositoryPort,
 )
+from ..domain.datetime_utils import format_localized_slot, is_english as check_is_english
 from .resolve_conflict import evaluate_calendar_slot
 
 
@@ -239,35 +240,12 @@ class ProcessSessionUseCase:
             await asyncio.gather(*(evaluate_calendar(a) for a in calendar_actions))
 
         # Funzione helper per formattazione data/ora dipendente dalla lingua rilevata (audio o profilo utente)
-        WEEKDAYS_SHORT_IT = {0: "Lun", 1: "Mar", 2: "Mer", 3: "Gio", 4: "Ven", 5: "Sab", 6: "Dom"}
-        MONTHS_SHORT_IT = {
-            1: "Gen", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Mag", 6: "Giu",
-            7: "Lug", 8: "Ago", 9: "Set", 10: "Ott", 11: "Nov", 12: "Dic"
-        }
-        WEEKDAYS_SHORT_EN = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
-        MONTHS_SHORT_EN = {
-            1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
-            7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
-        }
-
         lang_code = (getattr(session_result, "detected_language", None) or "it").lower()
-        is_english = lang_code.startswith("en") or (user_profile_lang and "eng" in user_profile_lang.lower() and not lang_code.startswith("it"))
+        is_english = check_is_english(lang_code) or bool(user_profile_lang and "eng" in user_profile_lang.lower() and not lang_code.startswith("it"))
+        active_lang = "en" if is_english else "it"
 
         def format_slot_by_lang(dt_utc: datetime) -> str:
-            from zoneinfo import ZoneInfo
-            try:
-                tz = ZoneInfo(user_tz)
-            except Exception:
-                tz = ZoneInfo("Europe/Rome")
-            loc = dt_utc.astimezone(tz)
-            if is_english:
-                w_name = WEEKDAYS_SHORT_EN.get(loc.weekday(), loc.strftime("%a"))
-                m_name = MONTHS_SHORT_EN.get(loc.month, loc.strftime("%b"))
-                return f"{w_name} {loc.day} {m_name} at {loc.strftime('%H:%M')}"
-            else:
-                w_name = WEEKDAYS_SHORT_IT.get(loc.weekday(), loc.strftime("%a"))
-                m_name = MONTHS_SHORT_IT.get(loc.month, loc.strftime("%b"))
-                return f"{w_name} {loc.day} {m_name} ore {loc.strftime('%H:%M')}"
+            return format_localized_slot(dt_utc, user_tz=user_tz, lang=active_lang)
 
         # Loop Reattivo Calendario <-> Email: collegamento e iniezione slot ESCLUSIVAMENTE se l'email riguarda l'incontro con un interlocutore esterno
         if calendar_actions and email_actions:

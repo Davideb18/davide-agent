@@ -1,0 +1,38 @@
+[project]
+name = "call-meeting-agent"
+version = "1.0.0"
+description = "Aria — Executive Call & Meeting Operations Agent (Hexagonal Architecture with State Machine & HITL)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Davide" }
+]
+dependencies = [
+    "streamlit>=1.35.0",
+    "google-genai>=1.0.0",
+    "pydantic>=2.7.0",
+    "aiosqlite>=0.20.0",
+    "google-api-python-client>=2.120.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]

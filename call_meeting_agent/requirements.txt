@@ -1,0 +1,14 @@
+# Aria — Executive Call & Meeting Operations Agent
+# Core Runtime Dependencies
+streamlit>=1.35.0
+google-genai>=1.0.0
+pydantic>=2.7.0
+aiosqlite>=0.20.0
+google-api-python-client>=2.120.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+python-dotenv>=1.0.0
+
+# Testing & Quality Assurance
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

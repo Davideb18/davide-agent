@@ -83,7 +83,8 @@ class CommitActionUseCase:
                 note_path = await self.knowledge.save_meeting_note(action.knowledge_data)
                 # Graph Linking Bidirezionale: aggiornamento atomico del dossier persona con insight e backlink
                 if action.knowledge_data.target_person_name:
-                    summary_text = action.knowledge_data.summary or (
+                    raw_summary = getattr(action.knowledge_data, "summary", None)
+                    summary_text = (raw_summary.strip() if isinstance(raw_summary, str) and raw_summary.strip() else None) or (
                         action.knowledge_data.bullet_insights[0]
                         if action.knowledge_data.bullet_insights
                         else ""

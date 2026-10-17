@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
-from zoneinfo import ZoneInfo
 from ..domain.ports import CalendarServicePort
+from ..domain.datetime_utils import resolve_timezone
 
 
 async def evaluate_calendar_slot(
@@ -30,10 +30,7 @@ async def evaluate_calendar_slot(
         return False, []
 
     # Risoluzione fuso orario utente per calcolo orario lavorativo
-    try:
-        tz = ZoneInfo(user_tz)
-    except Exception:
-        tz = timezone.utc
+    tz = resolve_timezone(user_tz)
 
     req_utc = requested_start_utc if requested_start_utc.tzinfo else requested_start_utc.replace(tzinfo=timezone.utc)
     req_local = req_utc.astimezone(tz)

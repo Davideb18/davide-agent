@@ -105,6 +105,7 @@ class KnowledgePayload(BaseModel):
     """I dati esatti per creare o aggiornare una nota nel Second Brain (Obsidian)."""
     title: str
     target_person_name: str
+    summary: Optional[str] = None
     backlinks: List[str] = Field(default_factory=list)  # es: ["Filippo Calzavara", "Trellis", "PMS"]
     bullet_insights: List[str] = Field(default_factory=list)  # Punti chiave e preferenze estratte
     markdown_content: str  # Il testo formattato della nota
