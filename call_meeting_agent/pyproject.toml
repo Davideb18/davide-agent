@@ -36,3 +36,11 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::UserWarning",
 ]
+
+[tool.pyright]
+pythonPath = "/Users/davide/miniconda3/bin/python"
+extraPaths = [".", "src"]
+executionEnvironments = [
+    { root = ".", extraPaths = [".", "src"] }
+]
+

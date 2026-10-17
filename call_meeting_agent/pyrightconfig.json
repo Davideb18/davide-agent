@@ -1,0 +1,16 @@
+{
+  "pythonPath": "/Users/davide/miniconda3/bin/python",
+  "extraPaths": [
+    ".",
+    "src"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "src"
+      ]
+    }
+  ]
+}
