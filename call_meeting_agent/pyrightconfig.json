@@ -1,15 +1,20 @@
 {
+  "venvPath": "/Users/davide",
+  "venv": "miniconda3",
   "pythonPath": "/Users/davide/miniconda3/bin/python",
   "extraPaths": [
     ".",
-    "src"
+    "src",
+    "/Users/davide/miniconda3/lib/python3.13/site-packages"
   ],
+  "reportMissingImports": "none",
   "executionEnvironments": [
     {
       "root": ".",
       "extraPaths": [
         ".",
-        "src"
+        "src",
+        "/Users/davide/miniconda3/lib/python3.13/site-packages"
       ]
     }
   ]

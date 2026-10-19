@@ -172,33 +172,39 @@ def render():
                     unsafe_allow_html=True,
                 )
 
-                txt_prompt = st.text_area(
-                    "Prompt testuale:",
-                    height=140,
-                    placeholder="Es. Allora devo mandare un'email a me stesso con gli appunti, una mail a mia mamma in inglese dove le dico che le voglio bene, e ricordarmi di fare la spesa e dare da bere alle piante...",
-                    key="landing_text_prompt",
-                    label_visibility="collapsed",
-                )
+                with st.form("landing_text_form", clear_on_submit=False):
+                    txt_prompt = st.text_area(
+                        "Prompt testuale:",
+                        height=140,
+                        placeholder="Es. Allora devo mandare un'email a me stesso con gli appunti, una mail a mia mamma in inglese dove le dico che le voglio bene, e ricordarmi di fare la spesa e dare da bere alle piante...",
+                        key="landing_text_prompt",
+                        label_visibility="collapsed",
+                    )
+                    submit_btn = st.form_submit_button(
+                        "⚡  Avvia Analisi del Testo",
+                        type="primary",
+                        use_container_width=True,
+                    )
+                    if submit_btn:
+                        if txt_prompt and txt_prompt.strip():
+                            t0 = time.perf_counter()
+                            orchestrator = get_orchestrator()
 
-                if txt_prompt and txt_prompt.strip():
-                    if st.button("⚡  Avvia Analisi del Testo", type="primary", use_container_width=True, key="btn_run_text_analysis"):
-                        t0 = time.perf_counter()
-                        orchestrator = get_orchestrator()
-
-                        with st.spinner("Estrazione ed elaborazione semantica con Gemini..."):
-                            result = run_async(
-                                orchestrator.execute(
-                                    text_prompt=txt_prompt.strip(),
-                                    anchor_utc=datetime.now(timezone.utc),
-                                    user_tz=user_tz,
+                            with st.spinner("Estrazione ed elaborazione semantica con Gemini..."):
+                                result = run_async(
+                                    orchestrator.execute(
+                                        text_prompt=txt_prompt.strip(),
+                                        anchor_utc=datetime.now(timezone.utc),
+                                        user_tz=user_tz,
+                                    )
                                 )
-                            )
 
-                        st.session_state.elapsed_seconds = round(time.perf_counter() - t0, 2)
-                        st.session_state.current_session = result
-                        st.rerun()
-                else:
-                    st.button("⚡  Avvia Analisi (Inserisci un testo...)", type="primary", use_container_width=True, disabled=True, key="btn_disabled_text_hint")
+                            st.session_state.elapsed_seconds = round(time.perf_counter() - t0, 2)
+                            st.session_state.current_session = result
+                            st.rerun()
+                        else:
+                            st.warning("ℹ️ Inserisci un testo prima di avviare l'analisi.")
+
 
             # ── FUSO ORARIO OPERATIVO (FOOTER CARD) ────────────────────────
             st.markdown("<div style='height: 12px; border-top: 1px solid #E5E7EB; margin-top: 14px;'></div>", unsafe_allow_html=True)

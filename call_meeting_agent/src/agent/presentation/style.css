@@ -162,8 +162,7 @@ p, span, div, label, .stMarkdown p {
 
 /* --- INPUT, DATE & TEXTAREA (Apple Form Inputs) --- */
 [data-baseweb="input"],
-[data-baseweb="textarea"],
-textarea {
+[data-baseweb="textarea"] {
     background-color: #FFFFFF !important;
     background: #FFFFFF !important;
     color: #1A1A1E !important;
@@ -193,6 +192,8 @@ div[data-testid="stTextInput"] > div {
 }
 
 [data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+textarea,
 input[type="text"],
 input[type="email"] {
     background: transparent !important;
@@ -200,6 +201,10 @@ input[type="email"] {
     border: none !important;
     font-size: 14px !important;
     width: 100% !important;
+    cursor: text !important;
+    pointer-events: auto !important;
+    user-select: text !important;
+    -webkit-user-select: text !important;
 }
 
 [data-baseweb="input"]:focus-within,
@@ -208,6 +213,11 @@ textarea:focus {
     border-color: #0066CC !important;
     box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.15) !important;
     outline: none !important;
+}
+
+/* --- NASCONDI ESCLUSIVAMENTE IL TESTO 'Press ⌘+Enter to apply' --- */
+[data-testid="InputInstructions"] {
+    display: none !important;
 }
 
 /* --- DROPZONE UPLOAD FILE --- */

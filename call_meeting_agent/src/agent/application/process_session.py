@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -52,13 +53,15 @@ class ProcessSessionUseCase:
         candidates: List[Contact] = []
 
         # 1. Ricerca candidati per nome, cognome o alias
+        is_self = any(k in raw_lower for k in ("me stesso", "myself", "io", "berno davide", "davide berno", "davide"))
         for c in contacts:
-            full_name = f"{c.first_name} {c.last_name}".lower()
-            aliases_lower = [a.lower() for a in c.aliases]
+            full_name = f"{c.first_name} {c.last_name}".lower().strip()
+            aliases_lower = [a.lower().strip() for a in c.aliases]
             if (
-                raw_lower == c.first_name.lower()
+                raw_lower == c.first_name.lower().strip()
                 or raw_lower == full_name
                 or raw_lower in aliases_lower
+                or (is_self and ("utente" in [t.lower() for t in c.tags] or "davide" in c.first_name.lower() or "berno" in c.last_name.lower()))
             ):
                 candidates.append(c)
 
@@ -67,6 +70,8 @@ class ProcessSessionUseCase:
             entity.matched_contact_id = candidates[0].id
             entity.is_ambiguous = False
             entity.candidate_ids = []
+            if not getattr(entity, "email", None) and candidates[0].email:
+                entity.email = candidates[0].email
             return entity
 
         if len(candidates) > 1:
@@ -125,6 +130,8 @@ class ProcessSessionUseCase:
                 user_tz=user_tz,
                 user_profile_language=user_profile_lang,
             )
+            if not getattr(session_result, "raw_transcript", None):
+                session_result.raw_transcript = text_prompt.strip()
         elif audio_bytes:
             session_result = await self.llm.extract_from_audio(
                 audio_bytes=audio_bytes,
@@ -157,6 +164,36 @@ class ProcessSessionUseCase:
         for ent in session_result.entities:
             disambiguated_entities.append(self._disambiguate_entity(ent, saved_contacts))
         session_result.entities = disambiguated_entities
+
+        # Cross-linking di sicurezza: associa le email estratte alle entità e alle azioni email
+        full_context = f"{session_result.raw_transcript or ''} {text_prompt or ''}"
+        found_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_context)
+
+        for ent in session_result.entities:
+            if not getattr(ent, "email", None):
+                ent_lower = ent.raw_name.lower().strip()
+                # 1. Match con le proposed_actions di tipo EMAIL_DRAFT
+                for act in session_result.proposed_actions:
+                    if act.action_type == ActionType.EMAIL_DRAFT and act.email_data and act.email_data.recipient_email:
+                        r_name = (act.email_data.recipient_name or "").lower().strip()
+                        if ent_lower in r_name or r_name in ent_lower or (any(k in ent_lower for k in ("me", "stesso", "davide", "io", "berno")) and any(k in r_name for k in ("me", "stesso", "davide", "io", "berno"))):
+                            ent.email = act.email_data.recipient_email
+                            break
+                # 2. Se l'entità è l'utente ("me stesso", "davide"), usa l'email trovata nel testo
+                if not getattr(ent, "email", None) and any(k in ent_lower for k in ("me", "stesso", "davide", "io", "berno")) and found_emails:
+                    ent.email = found_emails[0]
+
+        # Sincronizza anche in senso inverso: se EMAIL_DRAFT non ha email ma l'entità o il testo sì
+        for act in session_result.proposed_actions:
+            if act.action_type == ActionType.EMAIL_DRAFT and act.email_data:
+                if not (act.email_data.recipient_email or "").strip():
+                    r_name = (act.email_data.recipient_name or "").lower().strip()
+                    for ent in session_result.entities:
+                        if getattr(ent, "email", None) and (ent.raw_name.lower().strip() in r_name or r_name in ent.raw_name.lower().strip() or (any(k in r_name for k in ("me", "stesso", "davide", "io", "berno")) and any(k in ent.raw_name.lower() for k in ("me", "stesso", "davide", "io", "berno")))):
+                            act.email_data.recipient_email = ent.email
+                            break
+                    if not (act.email_data.recipient_email or "").strip() and any(k in r_name for k in ("me", "stesso", "davide", "io", "berno")) and found_emails:
+                        act.email_data.recipient_email = found_emails[0]
 
         # People Intelligence & Memoria Storica: recupero storico del contatto
         target_person_name: Optional[str] = None
@@ -198,10 +235,10 @@ class ProcessSessionUseCase:
                 desc_lower = (act.calendar_data.description or "").lower()
                 is_chore = any(kw in title_lower or kw in desc_lower for kw in CHORE_KEYWORDS)
                 if is_chore:
-                    chore_text = act.calendar_data.title.strip()
-                    if todo_action:
-                        if chore_text not in todo_action.task_data.task_items:
-                            todo_action.task_data.task_items.append(chore_text)
+                    task_data = todo_action.task_data if todo_action else None
+                    if task_data is not None:
+                        if chore_text not in task_data.task_items:
+                            task_data.task_items.append(chore_text)
                     else:
                         act.action_type = ActionType.TASK_TODO
                         act.task_data = TaskPayload(task_items=[chore_text])
@@ -293,14 +330,48 @@ class ProcessSessionUseCase:
         for action in session_result.proposed_actions:
             if action.action_type in (
                 ActionType.EMAIL_DRAFT,
-                ActionType.KNOWLEDGE_NOTE,
                 ActionType.TASK_TODO,
                 ActionType.TASK_EXPORT_REMINDERS,
             ):
                 if action.status not in (ActionStatus.EXECUTED, ActionStatus.REJECTED):
                     action.status = ActionStatus.PROPOSED
 
-        # 5. Salvataggio nel database SQLite
+        # 6. SINCRONIZZAZIONE AUTOMATICA SILENZIOSA DEL SECOND BRAIN (OBSIDIAN) IN BACKGROUND
+        # L'utente esige che ogni informazione, nota d'incontro, dossier e to-do sia effettivamente
+        # applicato e sincronizzato all'interno del proprio Second Brain, ma senza alcun elemento grafico.
+        if self.knowledge:
+            for act in session_result.proposed_actions:
+                if act.action_type == ActionType.KNOWLEDGE_NOTE and act.knowledge_data:
+                    try:
+                        note_path = await self.knowledge.save_meeting_note(act.knowledge_data)
+                        if act.knowledge_data.target_person_name:
+                            raw_summary = getattr(act.knowledge_data, "summary", None)
+                            summary_text = (raw_summary.strip() if isinstance(raw_summary, str) and raw_summary.strip() else None) or (
+                                act.knowledge_data.bullet_insights[0]
+                                if act.knowledge_data.bullet_insights
+                                else ""
+                            )
+                            await self.knowledge.link_meeting_to_person(
+                                person_name=act.knowledge_data.target_person_name,
+                                meeting_title=act.knowledge_data.title,
+                                meeting_rel_path=note_path,
+                                summary=summary_text,
+                                insights=act.knowledge_data.bullet_insights,
+                            )
+                        act.status = ActionStatus.EXECUTED
+                    except Exception as e:
+                        logger.warning(f"Auto-sync Second Brain non riuscito: {e}")
+
+                elif act.action_type == ActionType.TASK_TODO and act.task_data:
+                    try:
+                        await self.knowledge.append_tasks(
+                            payload=act.task_data,
+                            meeting_ref=act.task_data.target_project or "Meeting Sync"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Auto-append tasks Second Brain non riuscito: {e}")
+
+        # 7. Salvataggio nel database SQLite
         await self.repo.save_session(session_result)
 
         return session_result

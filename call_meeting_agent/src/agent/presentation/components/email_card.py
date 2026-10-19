@@ -2,6 +2,8 @@
 email_card.py — Card Bozza Email Follow-up in stile macOS Window / Gmail.
 Design pulito, contrasto elevato, reattività sul cambio destinatario e copywriting sobrio.
 """
+import html
+import re
 from typing import Optional, List
 import streamlit as st
 from src.agent.domain.enums import ActionStatus
@@ -9,10 +11,55 @@ from src.agent.domain.models import ProposedAction, Contact
 from src.agent.presentation.state import run_async, is_email_live
 
 
+def _adapt_greeting_locally(text: str, new_name: str) -> str:
+    """Adatta immediatamente il saluto e i vocativi (es. Ciao Davide -> Ciao David) in modo deterministico."""
+    clean = (new_name or "").strip()
+    if not clean or not text:
+        return text
+    raw_lower = clean.lower()
+    is_fem = (
+        any(raw_lower.endswith(e) for e in ("a", "mamma", "madre", "sorella", "nonna"))
+        and not any(raw_lower == m for m in ("luca", "andrea", "mattia", "nicola", "elia"))
+    )
+    # 1. Saluto informale tipo "Ciao <Nome>," o "Buongiorno <Nome>,"
+    text = re.sub(
+        r'^(Ciao|Buongiorno|Salve|Hi|Hello|Dear)\s+[A-Za-zÀ-ÿ]+([,\n!])',
+        rf'\1 {clean}\2',
+        text,
+        flags=re.MULTILINE,
+    )
+    # 2. Saluto formale o affettuoso "Caro <Nome>," / "Cara <Nome>,"
+    if is_fem:
+        text = re.sub(r'^(Car[oa]|Gentile)\s+[A-Za-zÀ-ÿ]+([,\n!])', rf'Cara {clean}\2', text, flags=re.MULTILINE)
+    else:
+        text = re.sub(r'^(Car[oa]|Gentile)\s+[A-Za-zÀ-ÿ]+([,\n!])', rf'Caro {clean}\2', text, flags=re.MULTILINE)
+    return text
+
+
 def render_email_card(mail_action: ProposedAction, know_action: Optional[ProposedAction], committer):
     """Renderizza la finestra per la bozza email di follow-up con sincronizzazione reattiva del destinatario."""
     data = mail_action.email_data
     if not data:
+        return
+
+    # Se l'azione email è stata scartata, mostra un banner compatto e discreto
+    if mail_action.status == ActionStatus.REJECTED:
+        with st.container(border=True):
+            col_t, col_undo = st.columns([4, 1])
+            with col_t:
+                st.markdown(
+                    f"<div style='display:flex; align-items:center; gap:8px; color:#8E8E93; font-size:13px; font-weight:600; padding:4px 0;'>"
+                    f"<span>🗑️</span>"
+                    f"<span style='text-decoration:line-through;'>Bozza email: {html.escape(data.subject or 'Nuovo messaggio')} (per {html.escape(data.recipient_name or 'destinatario')})</span>"
+                    f"<span class='aria-pill aria-pill-grey' style='font-size:10px;'>Scartata</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_undo:
+                if st.button("Ripristina", key=f"btn_undo_mail_{mail_action.id}", use_container_width=True):
+                    mail_action.status = ActionStatus.PROPOSED
+                    st.rerun()
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         return
 
     # Recupero contatti salvati per auto-suggerimento email al cambio nome
@@ -27,42 +74,58 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
     # Chiavi univoche per gli input del destinatario
     name_key = f"recip_name_{mail_action.id}"
     email_key = f"recip_email_{mail_action.id}"
-    prev_name_key = f"prev_recip_name_{mail_action.id}"
+    last_adapted_key = f"last_adapted_name_{mail_action.id}"
 
     # Inizializza session state se assente
     if name_key not in st.session_state:
         st.session_state[name_key] = data.recipient_name or ""
     if email_key not in st.session_state:
         st.session_state[email_key] = data.recipient_email or ""
-    if prev_name_key not in st.session_state:
-        st.session_state[prev_name_key] = st.session_state[name_key]
+    if last_adapted_key not in st.session_state:
+        st.session_state[last_adapted_key] = (data.recipient_name or "").strip()
 
-    # Rileva cambio di nome per aggiornare o resettare l'email correlata
+    # Aggiorna il nome nel payload senza mai cancellare l'indirizzo email inserito
     current_name = st.session_state[name_key].strip()
-    last_known_name = st.session_state[prev_name_key].strip()
+    data.recipient_name = current_name
 
-    if current_name != last_known_name:
-        st.session_state[prev_name_key] = current_name
-        data.recipient_name = current_name
-        
-        # Cerca corrispondenza nei contatti salvati
+    # Suggerisci email solo se il campo email è attualmente vuoto
+    if not st.session_state[email_key].strip() and current_name:
         clean_target = current_name.lower()
-        matched_contact = None
+        # 1. Cerca nei contatti salvati
         for c in saved_contacts:
             full = f"{c.first_name} {c.last_name}".lower().strip()
             aliases = [a.lower().strip() for a in (c.aliases or [])]
             if clean_target == full or clean_target == c.first_name.lower().strip() or clean_target in aliases:
-                matched_contact = c
+                if c.email:
+                    data.recipient_email = c.email
+                    st.session_state[email_key] = c.email
+                    st.toast(f"Email di {current_name} recuperata dalla rubrica: {c.email}", icon="👤")
                 break
-        
-        if matched_contact and matched_contact.email:
-            data.recipient_email = matched_contact.email
-            st.session_state[email_key] = matched_contact.email
-            st.toast(f"Email di {current_name} recuperata dalla rubrica: {matched_contact.email}", icon="👤")
-        elif not matched_contact and last_known_name and not current_name.lower().startswith(last_known_name.lower()):
-            # Cambio di destinatario verso persona sconosciuta/senza email: svuota l'email per evitare attribuzioni errate
-            data.recipient_email = ""
-            st.session_state[email_key] = ""
+
+        # 2. Se ancora vuoto, cerca tra le entità della sessione o nel prompt
+        if not st.session_state[email_key].strip():
+            session_obj = st.session_state.get("current_session")
+            is_self = any(k in clean_target for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+            if session_obj and getattr(session_obj, "entities", None):
+                for ent in session_obj.entities:
+                    if getattr(ent, "email", None) and ent.email.strip():
+                        ent_lower = ent.raw_name.lower().strip()
+                        if (
+                            ent_lower in clean_target
+                            or clean_target in ent_lower
+                            or (is_self and any(k in ent_lower for k in ("me", "stesso", "davide", "berno", "io", "myself")))
+                        ):
+                            data.recipient_email = ent.email.strip()
+                            st.session_state[email_key] = ent.email.strip()
+                            break
+
+            if not st.session_state[email_key].strip() and is_self and session_obj:
+                full_txt = f"{getattr(session_obj, 'raw_transcript', '') or ''} {getattr(session_obj, 'summary', '') or ''}"
+                found_mails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_txt)
+                if found_mails:
+                    data.recipient_email = found_mails[0]
+                    st.session_state[email_key] = found_mails[0]
+
 
     session = st.session_state.get("current_session")
     lang = getattr(session, "detected_language", "it") if session else "it"
@@ -201,7 +264,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                     if st.session_state.get(email_key) != picked_email:
                         st.session_state[email_key] = picked_email
                         st.session_state[name_key] = picked_name
-                        st.session_state[prev_name_key] = picked_name
+                        st.session_state[last_adapted_key] = picked_name
                         data.recipient_email = picked_email
                         data.recipient_name = picked_name
                         st.toast(f"Contatto rubrica associato: {picked_name} ({picked_email})", icon="👤")
@@ -232,46 +295,107 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 )
                 data.recipient_name = new_name
 
+            # Rilevamento cambio nome per riadattamento AUTOMATICO del testo (concordanza, genere, saluti)
+            current_typed_name = (new_name or "").strip()
+            prev_adapted_name = st.session_state.get(last_adapted_key, "").strip()
+            name_has_changed = bool(
+                current_typed_name
+                and prev_adapted_name
+                and current_typed_name.lower() != prev_adapted_name.lower()
+                and not is_exec
+            )
+
             ver = st.session_state.get(f"email_ver_{mail_action.id}", 0)
+
+            # Riadattamento automatico immediato: zero clic manuali richiesti
+            if name_has_changed:
+                curr_body = st.session_state.get(f"body_{mail_action.id}_{ver}", data.body_markdown)
+                # Adattamento immediato locale deterministico (0ms di latenza)
+                locally_adapted = _adapt_greeting_locally(curr_body, current_typed_name)
+                data.body_markdown = locally_adapted
+                data.recipient_name = current_typed_name
+                st.session_state[last_adapted_key] = current_typed_name
+                ver_key = f"email_ver_{mail_action.id}"
+                new_ver = ver + 1
+                st.session_state[ver_key] = new_ver
+                st.session_state[f"body_{mail_action.id}_{new_ver}"] = locally_adapted
+                st.session_state[f"subj_{mail_action.id}_{new_ver}"] = data.subject
+
+                # Affinamento con LLM in background se disponibile
+                extractor = st.session_state.get("extractor")
+                if extractor and hasattr(extractor, "adapt_email_recipient"):
+                    try:
+                        updated_payload = run_async(
+                            extractor.adapt_email_recipient(
+                                original_payload=data,
+                                new_recipient_name=current_typed_name,
+                            )
+                        )
+                        if updated_payload and updated_payload.body_markdown:
+                            data.body_markdown = updated_payload.body_markdown
+                            data.subject = updated_payload.subject
+                            st.session_state[f"body_{mail_action.id}_{new_ver}"] = updated_payload.body_markdown
+                            st.session_state[f"subj_{mail_action.id}_{new_ver}"] = updated_payload.subject
+                    except Exception:
+                        pass
+
+                st.toast(f"Testo email aggiornato automaticamente per {current_typed_name}!", icon="✨")
+                st.rerun()
+
             subj_lbl = "Subject:" if is_en else "Oggetto:"
-            data.subject = st.text_input(
+
+            new_subj = st.text_input(
                 subj_lbl,
                 value=data.subject,
                 key=f"subj_{mail_action.id}_{ver}",
                 disabled=is_exec,
             )
+            data.subject = new_subj
+
             body_lbl = "Message body:" if is_en else "Testo del messaggio:"
-            data.body_markdown = st.text_area(
+            new_body = st.text_area(
                 body_lbl,
                 value=data.body_markdown,
                 height=155,
                 key=f"body_{mail_action.id}_{ver}",
                 disabled=is_exec,
             )
+            data.body_markdown = new_body
 
             if not is_exec:
                 st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-                c1, c2 = st.columns([1.6, 1])
-                with c1:
+                col_save, col_rej = st.columns([1.8, 1])
+                with col_save:
                     save_btn_lbl = "✉️  Save Draft" if is_en else ("✉️  Salva Bozza in Gmail" if email_live else "✉️  Salva Bozza")
                     if st.button(save_btn_lbl, key=f"btn_mail_{mail_action.id}", type="primary", use_container_width=True):
+                        # Assicura la sincronizzazione dei campi editati dall'utente
+                        curr_subj = st.session_state.get(f"subj_{mail_action.id}_{ver}", data.subject)
+                        curr_body = st.session_state.get(f"body_{mail_action.id}_{ver}", data.body_markdown)
+                        curr_email = st.session_state.get(email_key, data.recipient_email)
+                        curr_name = st.session_state.get(name_key, data.recipient_name)
+                        if curr_subj: data.subject = curr_subj
+                        if curr_body: data.body_markdown = curr_body
+                        if curr_email: data.recipient_email = curr_email
+                        if curr_name: data.recipient_name = curr_name
+
                         # Auto-salvataggio dell'indirizzo email inserito nel contatto rubrica se precedentemente privo
-                        if repo and new_email and "@" in new_email:
-                            clean_target_name = (new_name or "").lower().strip()
+                        if repo and curr_email and "@" in curr_email:
+                            clean_target_name = (curr_name or "").lower().strip()
                             for sc in saved_contacts:
                                 sc_full = f"{sc.first_name} {sc.last_name}".lower().strip()
                                 sc_aliases = [a.lower().strip() for a in (sc.aliases or [])]
                                 if (clean_target_name in (sc_full, sc.first_name.lower().strip()) or clean_target_name in sc_aliases) and not (sc.email or "").strip():
-                                    sc.email = new_email.strip()
+                                    sc.email = curr_email.strip()
                                     run_async(repo.add_contact(sc))
                                     st.toast(f"Email di {sc.first_name} salvata automaticamente in rubrica!", icon="💾")
                                     break
 
                         ok, msg = run_async(committer.execute_action(mail_action, user_modified_payload=data.model_dump(mode="json")))
                         if ok:
-                            st.toast(msg, icon="✉️")
+                            st.toast(msg, icon="✅")
                             st.rerun()
-                with c2:
+
+                with col_rej:
                     rej_lbl = "Discard" if is_en else "Scarta"
                     if st.button(rej_lbl, key=f"btn_mail_reject_{mail_action.id}", use_container_width=True):
                         run_async(committer.reject_action(mail_action))

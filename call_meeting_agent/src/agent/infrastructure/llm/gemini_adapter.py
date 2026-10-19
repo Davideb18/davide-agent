@@ -8,7 +8,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+import re
+from typing import Optional, List, Any
 
 from google import genai
 from google.genai import types
@@ -65,16 +66,6 @@ class GeminiExtractorAdapter:
             ".flac": "audio/flac",
         }
         return mapping.get(ext, "audio/mp3")
-
-    async def extract_from_audio(
-        self, audio_bytes: bytes, filename: str, anchor_utc: datetime, user_tz: str = "Europe/Rome"
-    ) -> SessionExtractionResult:
-        """
-        Analizza l'audio con Gemini e cascata automatica di declassazione in caso di sovraccarico (503).
-        Nessun mock hardcoded: esecuzione 100% reale.
-        """
-        mime_type = self._detect_mime_type(filename)
-        anchor_iso = anchor_utc.isoformat()
 
     def _build_system_instruction(
         self, anchor_iso: str, user_tz: str, user_profile_language: Optional[str] = None
@@ -151,7 +142,8 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
    - Note e approfondimenti rilevanti da conservare nel tempo.
 
 5. ENTITÀ E RUOLI (entities):
-   - Estrai i contatti reali (es. 'Mamma', 'Davide').
+   - Estrai i contatti reali (es. 'Mamma', 'Davide' o 'Me stesso').
+   - Se per una persona viene citata un'email (es. "email a me stesso, quindi a bernardavide88@gmail.com"), compila TASSATIVAMENTE il campo `email` dell'entità con quell'indirizzo!
    - Per familiari o contatti personali, imposta `company="N/D"` e `role="Famiglia"` o `role="Personale"`. NON inventare ruoli aziendali ridicoli come "madre dell'utente" o "riceverà un'email".
 """
 
@@ -196,9 +188,10 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         )
 
         # Preparazione contenuti audio
+        raw_items: List[Any] = []
         if len(audio_bytes) < 15 * 1024 * 1024:
             audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
-            contents = [
+            raw_items = [
                 audio_part,
                 prompt_directive,
             ]
@@ -208,7 +201,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
                 f.write(audio_bytes)
             try:
                 uploaded_file = await asyncio.to_thread(client.files.upload, file=temp_path)
-                contents = [
+                raw_items = [
                     uploaded_file,
                     prompt_directive,
                 ]
@@ -216,13 +209,15 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
 
+        contents_payload: Any = raw_items
+
         # Cascata di declassazione dei modelli (eseguita su thread isolato per evitare conflitti di loop)
         for model in self.model_cascade:
             try:
                 response = await asyncio.to_thread(
                     client.models.generate_content,
                     model=model,
-                    contents=contents,
+                    contents=contents_payload,
                     config=config,
                 )
                 if response and response.text:
@@ -288,7 +283,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
             f"Genera EMAIL_DRAFT lasciando vuota l'email se non esplicitata, senza note inventate di calendario per messaggi personali."
         )
 
-        contents = [
+        contents: Any = [
             f"TESTO / PROMPT DELLA GIORNATA:\n{text_prompt}",
             prompt_directive,
         ]
@@ -407,5 +402,93 @@ Genera il nuovo EmailPayload aggiornato con oggetto pertinente e corpo modificat
         fallback = original_payload.model_copy()
         fallback.body_markdown += f"\n\n> 🗓️ **Nuova Proposta Oraria**: {new_slot_str}"
         return fallback
+
+    async def adapt_email_recipient(
+        self,
+        original_payload: EmailPayload,
+        new_recipient_name: str,
+        history: Optional[PersonHistorySummary] = None,
+        user_tz: str = "Europe/Rome",
+    ) -> EmailPayload:
+        """
+        Riadatta in tempo reale il corpo e l'oggetto della bozza email al nuovo destinatario.
+        Aggiorna il saluto (es. 'Ciao Roberto', 'Cara Mamma', 'Cara Giulia'), concorda il genere
+        (maschile/femminile) di articoli e aggettivi, mantenendo identico l'indirizzo email e i contenuti.
+        """
+        clean_name = new_recipient_name.strip()
+        if not clean_name:
+            return original_payload
+
+        system_instruction = f"""
+Sei un assistente esecutivo impeccabile nella redazione di email professionali e personali.
+Il tuo compito è riadattare la bozza email al nuovo destinatario specificato: "{clean_name}".
+
+REGOLE TASSATIVE DI RIADATTAMENTO:
+1. Saluto iniziale e vocativi: aggiornali fedelmente al nuovo destinatario.
+   - Es. Se era "Ciao Davide" e ora è "Roberto" -> "Ciao Roberto" o "Caro Roberto".
+   - Se il destinatario è femminile (es. "Giulia", "Mamma", "Chiara", "Elena") -> usa forme femminili ("Cara Giulia", "Cara Mamma", "Ciao Giulia").
+   - Se il destinatario è un familiare ("Mamma", "Papà"), usa un saluto affettuoso e cordiale.
+2. Concordanza di genere e articoli nel testo:
+   - Se il destinatario cambia genere (maschile <-> femminile), adatta tutti gli articoli, pronomi e participi passati (es. "benvenuto" <-> "benvenuta", "pronto" <-> "pronta", "caro" <-> "cara").
+3. Contenuti e dettagli:
+   - Mantieni INVARIATI tutti i contenuti operativi, i task, le decisioni, gli allegati o i riferimenti citati nel testo originale.
+4. Campi tecnici:
+   - `recipient_email`: MANTIENI TASSATIVAMENTE l'email originale "{original_payload.recipient_email}". NON modificarla e non inventare indirizzi.
+   - `recipient_name`: imposta esattamente "{clean_name}".
+"""
+
+        prompt = f"""
+BOZZA ORIGINALE:
+Destinatario originale: {original_payload.recipient_name}
+Email (da mantenere invariata): {original_payload.recipient_email}
+Oggetto attuale: {original_payload.subject}
+Testo attuale:
+{original_payload.body_markdown}
+
+NUOVO DESTINATARIO:
+Nome: {clean_name}
+
+Genera il nuovo EmailPayload aggiornato con concordanza perfetta di genere, formule di saluto e testo riadattato.
+"""
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_schema=EmailPayload,
+            temperature=0.2,
+        )
+
+        client = genai.Client(api_key=self.api_key)
+
+        contents_payload: Any = [prompt]
+        for model in self.model_cascade:
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents_payload,
+                    config=config,
+                )
+                if response and response.text:
+                    updated = EmailPayload.model_validate_json(response.text)
+                    updated.recipient_email = original_payload.recipient_email
+                    updated.recipient_name = clean_name
+                    updated.linked_calendar_action_id = original_payload.linked_calendar_action_id
+                    updated.cc = original_payload.cc
+                    return updated
+            except Exception as e:
+                logger.warning(f"Modello {model} fallito in adapt_email_recipient: {e}")
+                continue
+
+        # Fallback euristico rapido (sostituzione vocativo)
+        fallback = original_payload.model_copy()
+        fallback.recipient_name = clean_name
+        old_n = (original_payload.recipient_name or "").strip()
+        body = fallback.body_markdown
+        if old_n and old_n.lower() in body.lower():
+            body = re.sub(re.escape(old_n), clean_name, body, flags=re.IGNORECASE)
+        fallback.body_markdown = body
+        return fallback
+
 
 

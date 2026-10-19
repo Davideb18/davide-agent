@@ -1,141 +1,122 @@
 """
-tasks_card.py — Card To-Do List e Obsidian Second Brain.
-Design System: Apple Executive / Gemini Glass.
+tasks_card.py — Card To-Do List e Promemoria macOS.
+Design System: Apple Executive.
 """
-import re
+import html
 from typing import Optional
 import streamlit as st
-from src.agent.domain.enums import ActionStatus
-from src.agent.domain.models import ProposedAction
+from src.agent.domain.enums import ActionStatus, ActionType
+from src.agent.domain.models import ProposedAction, TaskPayload
 from src.agent.presentation.state import run_async
 
 
-def render_tasks_card(task_action: Optional[ProposedAction], know_action: Optional[ProposedAction], committer):
-    """Renderizza le sezioni operative per To-Do List e Second Brain Obsidian."""
+def render_tasks_card(task_action: Optional[ProposedAction], committer):
+    """Renderizza la card per la checklist dei task operativi e l'esportazione su Promemoria macOS."""
+    if not task_action or not task_action.task_data:
+        return
+
+    data = task_action.task_data
+
+    # Se l'azione task è stata scartata, mostra banner ridotto
+    if task_action.status == ActionStatus.REJECTED:
+        with st.container(border=True):
+            col_t, col_undo = st.columns([4, 1])
+            with col_t:
+                st.markdown(
+                    f"<div style='display:flex; align-items:center; gap:8px; color:#8E8E93; font-size:13px; font-weight:600; padding:4px 0;'>"
+                    f"<span>🗑️</span>"
+                    f"<span style='text-decoration:line-through;'>Compiti To-Do concordati ({len(data.task_items)} elementi)</span>"
+                    f"<span class='aria-pill aria-pill-grey' style='font-size:10px;'>Scartati</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_undo:
+                if st.button("Ripristina", key=f"btn_undo_task_{task_action.id}", use_container_width=True):
+                    task_action.status = ActionStatus.PROPOSED
+                    st.rerun()
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        return
+
     with st.container(border=True):
+        proj_badge = (
+            f"<span class='aria-pill aria-pill-blue' style='font-size:11px;'>Progetto: [[{html.escape(data.target_project)}]]</span>"
+            if data.target_project else
+            "<span class='aria-pill aria-pill-grey' style='font-size:11px;'>To-Do Operativi</span>"
+        )
         st.markdown(
-            "<h3 style='font-size:18px; font-weight:700; color:#1A1A1E; margin:0 0 14px 0; letter-spacing:-0.025em;'>"
-            "📋 Action Items & Second Brain</h3>",
+            f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="font-size:19px; font-weight:800; color:#1D1D1F; margin:0; letter-spacing:-0.02em;">
+                    📋 Compiti Operativi (To-Do List)
+                </h3>
+                {proj_badge}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-        col_tasks, col_vault = st.columns([1.2, 1], gap="large")
+        col_edit, col_actions = st.columns([2, 1.2], gap="large")
 
-        # Sezione Tasks a sinistra
-        with col_tasks:
+        with col_edit:
+            txt_items = "\n".join(data.task_items or [])
+            is_exec = (task_action.status == ActionStatus.EXECUTED)
+            edited_tasks = st.text_area(
+                "Compiti da eseguire (uno per riga):",
+                value=txt_items,
+                height=140,
+                key=f"tasks_input_{task_action.id}",
+                disabled=is_exec,
+                help="Modifica o aggiungi compiti prima di salvarli nel tuo progetto o in Promemoria.",
+            )
+            data.task_items = [t.strip() for t in edited_tasks.split("\n") if t.strip()]
+
+        with col_actions:
             st.markdown(
-                "<div style='display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;'>"
-                "<span style='font-size:11.5px; font-weight:700; color:#1A1A1E; text-transform:uppercase; letter-spacing:0.06em;'>Checklist Decisioni</span>"
-                "<span class='aria-pill aria-pill-blue' style='font-size:10px;'>Priorità Alta</span>"
-                "</div>",
+                "<div style='font-size:11px; font-weight:700; color:#8E8E93; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;'>Sincronizzazione</div>",
                 unsafe_allow_html=True,
             )
-            if task_action and task_action.task_data:
-                txt_items = "\n".join(task_action.task_data.task_items or [])
-                edited_tasks = st.text_area(
-                    "Compiti concordati:",
-                    value=txt_items,
-                    height=125,
-                    key=f"tasks_input_{task_action.id}",
-                    label_visibility="collapsed",
+
+            # Esporta su Apple Reminders (Promemoria macOS) — Esecuzione non-bloccante a latenza zero
+            rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
+            if not rem_synced:
+                if st.button("🍎 Esporta su Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", type="primary", use_container_width=True):
+                    import uuid
+                    import hashlib
+                    import threading
+
+                    latest_raw = st.session_state.get(f"tasks_input_{task_action.id}", edited_tasks)
+                    data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
+
+                    raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}"
+                    rem_action = ProposedAction(
+                        id=f"act_rem_{uuid.uuid4().hex[:8]}",
+                        session_id=task_action.session_id,
+                        action_type=ActionType.TASK_EXPORT_REMINDERS,
+                        idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
+                        task_data=TaskPayload(task_items=data.task_items),
+                    )
+
+                    def _run_bg_export():
+                        try:
+                            run_async(committer.execute_action(rem_action))
+                        except Exception:
+                            pass
+
+                    threading.Thread(target=_run_bg_export, daemon=True).start()
+                    st.session_state[f"reminders_synced_{task_action.id}"] = True
+                    st.toast("Compiti inviati a Promemoria macOS!", icon="🍎")
+                    st.rerun()
+            else:
+                st.markdown(
+                    '<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px;"><span class="aria-pill aria-pill-green">✅ Sincronizzato con Promemoria macOS</span></div>',
+                    unsafe_allow_html=True,
                 )
-                task_action.task_data.task_items = [t.strip() for t in edited_tasks.split("\n") if t.strip()]
 
-                if task_action.status != ActionStatus.EXECUTED:
-                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                    c_save_obs, c_save_rem = st.columns([1, 1])
-                    with c_save_obs:
-                        if st.button("📋  Salva in Tasks.md", key=f"btn_save_tasks_{task_action.id}", type="primary", use_container_width=True):
-                            ok, _ = run_async(committer.execute_action(task_action, user_modified_payload=task_action.task_data.model_dump(mode="json")))
-                            if ok:
-                                st.toast("Compiti archiviati nel Second Brain!", icon="📋")
-                                st.rerun()
-                    with c_save_rem:
-                        rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
-                        if not rem_synced:
-                            if st.button("🍎  Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", use_container_width=True):
-                                import uuid
-                                import hashlib
-                                from src.agent.domain.enums import ActionType
-                                from src.agent.domain.models import TaskPayload
+            # Bottone Scarta
+            if not is_exec:
+                st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+                if st.button("Scarta Compiti", key=f"btn_rej_task_{task_action.id}", use_container_width=True):
+                    run_async(committer.reject_action(task_action))
+                    st.rerun()
 
-                                raw_sig = f"{task_action.session_id}_reminders_{','.join(task_action.task_data.task_items)}"
-                                rem_action = ProposedAction(
-                                    id=f"act_rem_{uuid.uuid4().hex[:8]}",
-                                    session_id=task_action.session_id,
-                                    action_type=ActionType.TASK_EXPORT_REMINDERS,
-                                    idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
-                                    task_data=TaskPayload(task_items=task_action.task_data.task_items),
-                                )
-                                ok, msg = run_async(committer.execute_action(rem_action))
-                                if ok:
-                                    st.session_state[f"reminders_synced_{task_action.id}"] = True
-                                    st.toast(msg, icon="🍎")
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-                        else:
-                            st.markdown('<span class="aria-pill aria-pill-green" style="font-size:10.5px;">✓ In Promemoria macOS</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="aria-pill aria-pill-green">✓ Compiti Sincronizzati in Tasks.md</span>', unsafe_allow_html=True)
-                    rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
-                    if not rem_synced:
-                        if st.button("🍎  Esporta anche su Promemoria macOS ('Aria Tasks')", key=f"btn_save_reminders_post_{task_action.id}", use_container_width=True):
-                            import uuid
-                            import hashlib
-                            from src.agent.domain.enums import ActionType
-                            from src.agent.domain.models import TaskPayload
-
-                            raw_sig = f"{task_action.session_id}_reminders_{','.join(task_action.task_data.task_items)}"
-                            rem_action = ProposedAction(
-                                id=f"act_rem_{uuid.uuid4().hex[:8]}",
-                                session_id=task_action.session_id,
-                                action_type=ActionType.TASK_EXPORT_REMINDERS,
-                                idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
-                                task_data=TaskPayload(task_items=task_action.task_data.task_items),
-                            )
-                            ok, msg = run_async(committer.execute_action(rem_action))
-                            if ok:
-                                st.session_state[f"reminders_synced_{task_action.id}"] = True
-                                st.toast(msg, icon="🍎")
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                    else:
-                        st.markdown('<div style="height:4px;"></div><span class="aria-pill aria-pill-green">✓ Esportato anche in Promemoria macOS</span>', unsafe_allow_html=True)
-
-        # Sezione Obsidian Vault a destra
-        with col_vault:
-            st.markdown(
-                "<p style='font-size:11.5px; font-weight:700; color:#1A1A1E; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;'>Obsidian Knowledge Vault</p>",
-                unsafe_allow_html=True,
-            )
-            meeting_note = "ACTIVITY/Meetings/Nota_Riunione.md"
-            contact_note = "PEOPLE/Contatto.md"
-            if know_action and know_action.knowledge_data:
-                def _slug(t: str) -> str:
-                    return re.sub(r"[-\s]+", "_", re.sub(r"[^\w\s-]", "", (t or "").lower().strip()))
-                t_slug = _slug(know_action.knowledge_data.title or "") or "meeting"
-                p_slug = _slug(know_action.knowledge_data.target_person_name or "") or "contatto"
-                meeting_note = f"ACTIVITY/Meetings/{t_slug}.md"
-                contact_note = f"PEOPLE/{p_slug}.md"
-
-            obsidian_html = (
-                f'<div style="background:#FFFFFF; border:1px solid #D2D2D7; border-radius:14px; padding:14px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,0.03);">'
-                f'<p style="font-size:13.5px; font-weight:700; color:#1A1A1E; margin:0 0 4px 0;">🧠 Dossier Riunione & Backlink</p>'
-                f'<p style="font-size:11.5px; color:#55555A; margin:0 0 10px 0; line-height:1.45;">Crea automaticamente le schede collegate nel tuo archivio Obsidian:</p>'
-                f'<div style="display:flex; flex-direction:column; gap:6px;">'
-                f'<span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">📁 {meeting_note}</span>'
-                f'<span style="font-size:11.5px; font-family:monospace; background:#EEF3FA; border:1px solid rgba(0,119,237,0.25); padding:4px 8px; border-radius:6px; color:#005FC4; font-weight:600;">📁 {contact_note}</span>'
-                f'</div>'
-                f'</div>'
-            )
-            st.markdown(obsidian_html, unsafe_allow_html=True)
-            if know_action and know_action.status != ActionStatus.EXECUTED:
-                if st.button("🧠  Sincronizza nel Vault Obsidian", key=f"btn_sync_obsidian_{know_action.id}", use_container_width=True):
-                    ok, _ = run_async(committer.execute_action(know_action))
-                    if ok:
-                        st.toast("Dossier sincronizzato nel vault Obsidian!", icon="🧠")
-                        st.rerun()
-            elif know_action and know_action.status == ActionStatus.EXECUTED:
-                st.markdown('<span class="aria-pill aria-pill-green">✓ Dossier e Backlink Sincronizzati nel Vault</span>', unsafe_allow_html=True)
+    st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)

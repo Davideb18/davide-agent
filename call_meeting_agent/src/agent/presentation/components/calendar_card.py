@@ -218,8 +218,9 @@ def _generate_mini_week_html(
             lines.append(
                 f'        <div style="position:absolute; left:2px; right:2px; top:{top_px}px; height:{h_px}px; background:#EFF6FF; border-left:3.5px solid #2563EB; border-radius:5px; padding:2px 5px; overflow:hidden; z-index:1; box-shadow:0 1px 3px rgba(0,0,0,0.06);" title="{safe_title} ({ev_s.strftime("%H:%M")} – {ev_e.strftime("%H:%M")})">'
                 f'          <div style="font-weight:700; font-size:10px; color:#1E40AF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">{safe_title}</div>'
-                f'          <div style="font-size:8.5px; color:#3B82F6; font-weight:600; line-height:1.1;">🕒 {ev_s.strftime("%H:%M")}</div>'
+                f'          <div style="font-size:8.5px; color:#3B82F6; font-weight:600; line-height:1.1;">🕒 {ev_s.strftime("%H:%M")} – {ev_e.strftime("%H:%M")}</div>'
                 f'        </div>'
+
             )
 
         # Box Nuovo Appuntamento Proposto (Apple Blue vibrante con ombra morbida)
@@ -247,6 +248,26 @@ def render_calendar_card(action: ProposedAction, committer):
     """Renderizza la card appuntamento con banner conflitto extra spesso ed estetica Apple Calendar."""
     data = action.calendar_data
     if not data:
+        return
+
+    # Se l'azione è stata scartata, mostra un banner compatto e minimalista
+    if action.status == ActionStatus.REJECTED:
+        with st.container(border=True):
+            col_t, col_undo = st.columns([4, 1])
+            with col_t:
+                st.markdown(
+                    f"<div style='display:flex; align-items:center; gap:8px; color:#8E8E93; font-size:13px; font-weight:600; padding:4px 0;'>"
+                    f"<span>🗑️</span>"
+                    f"<span style='text-decoration:line-through;'>Appuntamento: {html.escape(data.title)}</span>"
+                    f"<span class='aria-pill aria-pill-grey' style='font-size:10px;'>Scartato</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_undo:
+                if st.button("Ripristina", key=f"btn_undo_cal_{action.id}", use_container_width=True):
+                    action.status = ActionStatus.PROPOSED
+                    st.rerun()
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         return
 
     # Inizializzazione Calendar Service (Live 100%)
@@ -293,14 +314,19 @@ def render_calendar_card(action: ProposedAction, committer):
     w_end_utc = datetime(display_sunday.year, display_sunday.month, display_sunday.day, 23, 59, 59, tzinfo=local_tz).astimezone(timezone.utc)
     week_events: List[CalendarEventItem] = _fetch_calendar_events(cal_service, w_start_utc, w_end_utc)
 
-    # Verifica collisione effettiva sull'evento proposto
+    # Verifica collisione effettiva sull'evento proposto (escludendo se già sincronizzato o evento stesso)
     is_conflict = False
     conflict_title = ""
-    for ev in week_events:
-        if data.start_utc < ev.end_utc and data.end_utc > ev.start_utc:
-            is_conflict = True
-            conflict_title = ev.title
-            break
+    if action.status != ActionStatus.EXECUTED:
+        for ev in week_events:
+            if data.start_utc < ev.end_utc and data.end_utc > ev.start_utc:
+                # Non considerare in conflitto l'evento appena inserito con lo stesso titolo
+                if ev.title.strip().lower() == data.title.strip().lower():
+                    continue
+                is_conflict = True
+                conflict_title = ev.title
+                break
+
 
     live_connected = is_calendar_live()
     sync_badge = (
@@ -478,6 +504,9 @@ def render_calendar_card(action: ProposedAction, committer):
                 with c_btn:
                     btn_text = "📅 Add to Google Calendar" if is_en else "📅 Inserisci in Google Calendar"
                     if st.button(btn_text, key=f"btn_cal_commit_{action.id}", type="primary", use_container_width=True):
+                        curr_title = st.session_state.get(f"cal_title_{action.id}", data.title)
+                        if curr_title:
+                            data.title = curr_title
                         ok, msg = run_async(committer.execute_action(action, user_modified_payload=data.model_dump(mode="json")))
                         if ok:
                             st.toast(msg, icon="📅")

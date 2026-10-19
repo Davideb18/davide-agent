@@ -2,16 +2,49 @@
 sidebar_view.py — Colonna sinistra (Sidebar) del CRM Aria.
 Design pulito, contrasto elevato, zero testi da chatbot AI.
 """
+import html
+import re
 import uuid
 import streamlit as st
 from src.agent.domain.enums import ActionStatus, ActionType
-from src.agent.domain.models import SessionExtractionResult, Contact
+from src.agent.domain.models import SessionExtractionResult, Contact, ExtractedEntity
 from src.agent.presentation.state import (
     run_async,
     is_calendar_live,
     is_email_live,
     COMMON_TIMEZONES,
 )
+
+
+def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult) -> str:
+    """Risolve l'email di un'entità controllando l'attributo email, le azioni email e il testo/prompt."""
+    # 1. Se già presente direttamente sull'entità
+    if getattr(ent, "email", None) and ent.email.strip():
+        return ent.email.strip()
+
+    ent_name = (ent.raw_name or "").lower().strip()
+    is_self = any(k in ent_name for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+
+    # 2. Controlla tra le proposed_actions di tipo EMAIL_DRAFT
+    for act in session.proposed_actions:
+        if act.action_type == ActionType.EMAIL_DRAFT and act.email_data and act.email_data.recipient_email:
+            r_name = (act.email_data.recipient_name or "").lower().strip()
+            r_email = act.email_data.recipient_email.strip()
+            if ent_name in r_name or r_name in ent_name:
+                ent.email = r_email
+                return r_email
+            if is_self and (any(k in r_name for k in ("me", "stesso", "davide", "berno", "io", "myself")) or "davide" in r_email or "berno" in r_email):
+                ent.email = r_email
+                return r_email
+
+    # 3. Controlla indirizzi email nel testo/transcript
+    full_text = f"{session.raw_transcript or ''} {getattr(session, 'summary', '') or ''}"
+    found_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_text)
+    if is_self and found_emails:
+        ent.email = found_emails[0]
+        return found_emails[0]
+
+    return ""
 
 
 def render_sidebar(session: SessionExtractionResult):
@@ -60,133 +93,182 @@ def render_sidebar(session: SessionExtractionResult):
             unsafe_allow_html=True,
         )
 
-        # ── SCHEDA CONTATTO INTERLOCUTORE ──────────────────────────────
-        primary_entity = next((e for e in session.entities if e.matched_contact_id), None)
-        contact = None
-        if primary_entity and hasattr(st.session_state, "repo") and st.session_state.repo:
-            contact = run_async(st.session_state.repo.get_contact_by_id(primary_entity.matched_contact_id))
+        # ── SCHEDE CONTATTI / PERSONE RILEVATE ─────────────────────────
+        st.markdown(
+            "<div style='font-size:11px; font-weight:700; color:#8E8E93; text-transform:uppercase; letter-spacing:0.05em; margin:14px 0 8px 0;'>"
+            "👥 Persone e Contatti Rilevati</div>",
+            unsafe_allow_html=True,
+        )
 
-        if contact:
-            fn = (contact.first_name or "").strip()
-            ln = (contact.last_name or "").strip()
-            if fn and ln:
-                initials = f"{fn[:1]}{ln[:1]}".upper()
-            elif len(fn) >= 2:
-                initials = fn[:2].upper()
-            elif len(fn) == 1:
-                initials = fn.upper()
-            elif len(ln) >= 2:
-                initials = ln[:2].upper()
-            elif len(ln) == 1:
-                initials = ln.upper()
-            else:
-                initials = "👤"
+        matched_entities = [e for e in session.entities if e.matched_contact_id]
+        other_entities = [e for e in session.entities if not e.matched_contact_id]
 
-            full_display_name = f"{fn} {ln}".strip() or "Contatto"
-            badges = []
-            comp = (contact.company or "").strip()
-            role = (contact.role or "").strip()
-            junk_terms = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
-            if comp and not any(t in comp.lower() for t in junk_terms):
-                badges.append(f'<span class="aria-pill aria-pill-blue" style="font-size:10.5px;">{comp}</span>')
-            if role and not any(t in role.lower() for t in junk_terms):
-                badges.append(f'<span class="aria-pill aria-pill-grey" style="font-size:10.5px;">{role}</span>')
-            badges_html = f"<div style='display:flex; justify-content:center; flex-wrap:wrap; gap:5px; margin-bottom:8px;'>{''.join(badges)}</div>" if badges else ""
-            email_html = f'<a href="mailto:{contact.email}" style="font-size: 11.5px; color: #0066CC; text-decoration: none; font-weight: 500;">{contact.email}</a>' if contact.email else '<span style="font-size: 11px; color:#8E8E93;">Nessuna email registrata</span>'
+        # Se ci sono contatti riconosciuti nella rubrica interna
+        if matched_entities:
+            for ent in matched_entities[:5]:
+                contact = None
+                if hasattr(st.session_state, "repo") and st.session_state.repo:
+                    contact = run_async(st.session_state.repo.get_contact_by_id(ent.matched_contact_id))
 
-            st.markdown(
-                f"""
-                <div style="
-                    background: #FFFFFF;
-                    border: 1px solid #E1E3EB;
-                    border-radius: 16px;
-                    padding: 16px;
-                    text-align: center;
-                    margin-bottom: 14px;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-                ">
-                    <div style="
-                        width: 50px;
-                        height: 50px;
-                        border-radius: 50%;
-                        background: #0066CC;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-size: 18px;
-                        font-weight: 700;
-                        color: #FFFFFF !important;
-                        margin: 0 auto 10px auto;
-                    ">{initials}</div>
-                    <h3 style="font-size: 15.5px; font-weight: 700; color: #1A1A1E; margin: 0 0 4px 0; letter-spacing: -0.02em;">
-                        {full_display_name}
-                    </h3>
-                    {badges_html}
-                    {email_html}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        elif session.entities:
-            ent = session.entities[0]
-            st.markdown(
-                f"""
-                <div style="
-                    background: #FFFFFF;
-                    border: 1px solid #E1E3EB;
-                    border-radius: 16px;
-                    padding: 16px;
-                    text-align: center;
-                    margin-bottom: 10px;
-                ">
-                    <div style="font-size: 26px; margin-bottom: 4px;">👤</div>
-                    <h3 style="font-size: 15px; font-weight: 700; color: #1A1A1E; margin: 0;">{ent.raw_name}</h3>
-                    <p style="font-size: 11.5px; color: #6E6E73; margin: 2px 0 0 0;">Contatto non in rubrica</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                if contact:
+                    fn = (contact.first_name or "").strip()
+                    ln = (contact.last_name or "").strip()
+                    initials = f"{fn[:1]}{ln[:1]}".upper() if fn and ln else (fn[:2].upper() if len(fn) >= 2 else "👤")
+                    full_display_name = f"{fn} {ln}".strip() or ent.raw_name
+                    badges = []
+                    comp = (contact.company or "").strip()
+                    role = (contact.role or "").strip()
+                    junk_terms = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
+                    if comp and not any(t in comp.lower() for t in junk_terms):
+                        badges.append(f'<span class="aria-pill aria-pill-blue" style="font-size:10px;">{html.escape(comp)}</span>')
+                    if role and not any(t in role.lower() for t in junk_terms):
+                        badges.append(f'<span class="aria-pill aria-pill-grey" style="font-size:10px;">{html.escape(role)}</span>')
+                    badges_html = f"<div style='display:flex; justify-content:center; flex-wrap:wrap; gap:4px; margin-bottom:6px;'>{''.join(badges)}</div>" if badges else ""
+                    disp_email = contact.email or _resolve_entity_email(ent, session)
+                    email_html = f'<div style="font-size:11px; color:#0066CC; font-weight:500;">📧 {html.escape(disp_email)}</div>' if disp_email else ''
 
-            # Quick Action: Aggiungi a Contatti (Expander fluido che si apre verso il basso)
-            with st.expander("➕  Salva Contatto in Rubrica", expanded=False):
-                st.markdown("<p style='font-size:12.5px; font-weight:700; margin-bottom:6px;'>Salva Persona</p>", unsafe_allow_html=True)
-                raw_parts = ent.raw_name.strip().split(maxsplit=1)
-                default_fn = raw_parts[0] if raw_parts else ent.raw_name.strip()
-                default_ln = raw_parts[1] if len(raw_parts) > 1 else ""
-
-                default_desc = "Persona"
-                raw_lower = ent.raw_name.lower()
-                if any(k in raw_lower for k in ("mamma", "madre", "papà", "padre", "fratello", "sorella", "famiglia")):
-                    default_desc = "Famiglia"
-                elif ent.context_clues and len(ent.context_clues) > 0:
-                    clue = ent.context_clues[0].strip()
-                    junk_clues = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
-                    if not any(j in clue.lower() for j in junk_clues):
-                        default_desc = clue
-
-                # Email vuota di default se non esplicitata per evitare attribuzioni errate
-                q_fn = st.text_input("Nome:", value=default_fn, key=f"q_fn_{ent.raw_name}")
-                q_ln = st.text_input("Cognome (opzionale):", value=default_ln, key=f"q_ln_{ent.raw_name}")
-                q_desc = st.text_input("Descrizione / Relazione (opzionale):", value=default_desc, key=f"q_desc_{ent.raw_name}", help="Es. Famiglia, Amico, Collega")
-                q_mail = st.text_input("Email (opzionale):", value="", key=f"q_mail_{ent.raw_name}")
-
-                if st.button("Salva Persona", type="primary", use_container_width=True, key=f"btn_save_cnt_{ent.raw_name}"):
-                    new_contact = Contact(
-                        id=f"cnt_{uuid.uuid4().hex[:8]}",
-                        first_name=q_fn.strip() or ent.raw_name,
-                        last_name=q_ln.strip(),
-                        email=q_mail.strip(),
-                        company="N/D",
-                        role=q_desc.strip() or default_desc,
-                        aliases=[ent.raw_name, q_fn.strip()],
-                        tags=["famiglia" if default_desc == "Famiglia" else "network"],
-                        timezone=st.session_state.get("user_timezone", "Europe/Rome"),
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background: #FFFFFF;
+                            border: 1px solid #E1E3EB;
+                            border-radius: 14px;
+                            padding: 12px;
+                            text-align: center;
+                            margin-bottom: 10px;
+                            box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+                        ">
+                            <div style="
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 50%;
+                                background: #0066CC;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: #FFFFFF !important;
+                                margin: 0 auto 6px auto;
+                            ">{initials}</div>
+                            <h4 style="font-size: 14px; font-weight: 700; color: #1A1A1E; margin: 0 0 2px 0;">
+                                {full_display_name}
+                            </h4>
+                            <div style="font-size: 10.5px; color: #8E8E93; margin-bottom: 6px;">Profilo Rubrica / Interlocutore</div>
+                            {badges_html}
+                            {email_html}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                    run_async(st.session_state.repo.add_contact(new_contact))
-                    ent.matched_contact_id = new_contact.id
-                    ent.is_ambiguous = False
-                    st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name}".strip() + " salvato con successo!", icon="👤")
-                    st.rerun()
+
+        # Mostra anche altre persone/familiari citati nella conversazione (es. Mamma, Me stesso)
+        if other_entities:
+            cards_html = []
+            for o_ent in other_entities[:4]:
+                ent_mail = _resolve_entity_email(o_ent, session)
+                if ent_mail:
+                    badge_status = '<span class="aria-pill aria-pill-blue" style="font-size:9.5px; padding:1px 6px;">Email Rilevata</span>'
+                    mail_line = f'<div style="font-size:11px; color:#0066CC; font-weight:600; margin-top:2px; word-break:break-all;">📧 {html.escape(ent_mail)}</div>'
+                else:
+                    badge_status = '<span class="aria-pill aria-pill-grey" style="font-size:9.5px; padding:1px 6px;">Nessuna email</span>'
+                    mail_line = ''
+
+                cards_html.append(
+                    f'<div style="background:#FFFFFF; border:1px solid #E1E3EB; border-radius:10px; padding:8px 10px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">'
+                    f'<div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">'
+                    f'<span style="font-size:12px; font-weight:700; color:#1A1A1E;">👤 {html.escape(o_ent.raw_name)}</span>'
+                    f'{badge_status}'
+                    f'</div>'
+                    f'{mail_line}'
+                    f'</div>'
+                )
+
+            st.markdown(
+                f"<div style='margin-bottom:10px;'>"
+                f"<div style='font-size:10.5px; color:#8E8E93; margin-bottom:6px;'>Altre persone citate nella sessione:</div>"
+                f"{''.join(cards_html)}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Quick Action: Salva ciascuna persona non ancora presente in rubrica
+            for idx, target_ent in enumerate(other_entities[:4]):
+                ent_email = _resolve_entity_email(target_ent, session)
+                raw_lower = target_ent.raw_name.lower().strip()
+                is_self = any(k in raw_lower for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+
+                if is_self:
+                    default_fn = "Davide"
+                    default_ln = "Berno"
+                    default_desc = "Personale / Utente"
+                else:
+                    raw_parts = target_ent.raw_name.strip().split(maxsplit=1)
+                    default_fn = raw_parts[0] if raw_parts else target_ent.raw_name.strip()
+                    default_ln = raw_parts[1] if len(raw_parts) > 1 else ""
+                    default_desc = "Persona"
+                    if any(k in raw_lower for k in ("mamma", "madre", "papà", "padre", "fratello", "sorella", "famiglia")):
+                        default_desc = "Famiglia"
+                    elif target_ent.context_clues and len(target_ent.context_clues) > 0:
+                        clue = target_ent.context_clues[0].strip()
+                        junk_clues = ["dell'utente", "riceverà", "ricevere", "email", "mail", "none", "n/d", "referente"]
+                        if not any(j in clue.lower() for j in junk_clues):
+                            default_desc = clue
+
+                exp_title = f"➕ Salva '{target_ent.raw_name}' in Rubrica"
+                if ent_email:
+                    exp_title += f" ({ent_email})"
+
+                safe_id = f"{idx}_{target_ent.raw_name.replace(' ', '_')}"
+                with st.expander(exp_title, expanded=False):
+                    st.markdown(
+                        f"<p style='font-size:12px; font-weight:700; margin-bottom:6px;'>Salva Persona in Rubrica ({html.escape(target_ent.raw_name)})</p>",
+                        unsafe_allow_html=True,
+                    )
+                    q_fn = st.text_input("Nome:", value=default_fn, key=f"q_fn_{safe_id}")
+                    q_ln = st.text_input("Cognome (opzionale):", value=default_ln, key=f"q_ln_{safe_id}")
+                    q_desc = st.text_input(
+                        "Descrizione / Relazione (opzionale):",
+                        value=default_desc,
+                        key=f"q_desc_{safe_id}",
+                        help="Es. Famiglia, Amico, Collega, Personale / Utente",
+                    )
+                    q_mail = st.text_input("Email (opzionale):", value=ent_email, key=f"q_mail_{safe_id}")
+
+                    if st.button("Salva Persona", type="primary", use_container_width=True, key=f"btn_save_cnt_{safe_id}"):
+                        new_contact = Contact(
+                            id=f"cnt_{uuid.uuid4().hex[:8]}",
+                            first_name=q_fn.strip() or target_ent.raw_name,
+                            last_name=q_ln.strip(),
+                            email=q_mail.strip(),
+                            company="Trellis" if is_self else "N/D",
+                            role=q_desc.strip() or default_desc,
+                            aliases=[target_ent.raw_name, q_fn.strip(), f"{q_fn.strip()} {q_ln.strip()}".strip()],
+                            tags=["utente"] if is_self else (["famiglia"] if default_desc == "Famiglia" else ["network"]),
+                            timezone=st.session_state.get("user_timezone", "Europe/Rome"),
+                        )
+                        run_async(st.session_state.repo.add_contact(new_contact))
+                        target_ent.matched_contact_id = new_contact.id
+                        target_ent.is_ambiguous = False
+                        target_ent.email = new_contact.email
+
+                        # Sincronizza anche con le bozze email pendenti
+                        for act in session.proposed_actions:
+                            if act.action_type == ActionType.EMAIL_DRAFT and act.email_data:
+                                r_name = (act.email_data.recipient_name or "").lower().strip()
+                                if (
+                                    target_ent.raw_name.lower() in r_name
+                                    or r_name in target_ent.raw_name.lower()
+                                    or (is_self and any(k in r_name for k in ("me", "stesso", "davide", "berno", "io")))
+                                ):
+                                    if not act.email_data.recipient_email:
+                                        act.email_data.recipient_email = new_contact.email
+                                    # Resetta la chiave session_state per riflettere l'email inserita
+                                    st.session_state.pop(f"recip_email_{act.id}", None)
+
+                        run_async(st.session_state.repo.save_session(session))
+                        st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name}".strip() + " salvato con successo!", icon="👤")
+                        st.rerun()
 
             st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 

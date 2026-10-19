@@ -2,6 +2,12 @@
   "python.defaultInterpreterPath": "/Users/davide/miniconda3/bin/python",
   "python.analysis.extraPaths": [
     ".",
-    "./src"
+    "./src",
+    "/Users/davide/miniconda3/lib/python3.13/site-packages"
+  ],
+  "python.autoComplete.extraPaths": [
+    ".",
+    "./src",
+    "/Users/davide/miniconda3/lib/python3.13/site-packages"
   ]
 }

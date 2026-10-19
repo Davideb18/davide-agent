@@ -135,12 +135,14 @@ class CommitActionUseCase:
                     success_msg = f"Checklist operativa salvata nei Task di Progetto! ({tasks_path})"
 
                 elif action.action_type == ActionType.TASK_EXPORT_REMINDERS:
-                    if not action.task_data or not action.task_data.items:
+                    items = getattr(action.task_data, "task_items", None) or getattr(action.task_data, "items", [])
+                    if not action.task_data or not items:
                         return False, "Nessun task specificato per l'esportazione su Promemoria!"
                     if not self.reminders:
-                        return False, "Servizio Apple Reminders non configurato o non disponibile."
+                        from ..infrastructure.apple.reminders_adapter import AppleRemindersAdapter
+                        self.reminders = AppleRemindersAdapter()
                     success, msg = await self.reminders.export_tasks(
-                        task_items=action.task_data.items,
+                        task_items=items,
                         list_name="Aria Tasks",
                     )
                     if not success:

@@ -22,6 +22,7 @@ class Contact(BaseModel):
 class ExtractedEntity(BaseModel):
     """Un'entità (persona) individuata nell'audio prima o durante la disambiguazione."""
     raw_name: str
+    email: str = ""
     context_clues: List[str] = Field(default_factory=list) # indizi di contesto (per capire di cosa si occupa)
     matched_contact_id: Optional[str] = None
     is_ambiguous: bool = False # se è ambiguo, vuol dire che ci sono più contatti con lo stesso nome
