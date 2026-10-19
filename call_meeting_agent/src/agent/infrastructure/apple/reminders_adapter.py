@@ -48,21 +48,18 @@ class AppleRemindersAdapter:
 
         # Script AppleScript ultra-veloce non-bloccante con launch in background
         script = f'''
-        tell application "Reminders" to launch
-        ignoring application responses
-            tell application "Reminders"
-                try
-                    set targetList to list "{clean_list_name}"
-                on error
-                    set targetList to (make new list with properties {{name:"{clean_list_name}"}})
-                end try
-                tell targetList
+        tell application "Reminders"
+            if not (exists list "{clean_list_name}") then
+                make new list with properties {{name:"{clean_list_name}"}}
+            end if
+            tell list "{clean_list_name}"
+                ignoring application responses
                     repeat with itemText in {{{items_array_str}}}
                         make new reminder with properties {{name:itemText}}
                     end repeat
-                end tell
+                end ignoring
             end tell
-        end ignoring
+        end tell
         '''
 
         def _run_script():

@@ -2,8 +2,11 @@ import asyncio
 import uuid
 import hashlib
 import re
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from ..domain.models import (
     SessionExtractionResult,
@@ -235,6 +238,7 @@ class ProcessSessionUseCase:
                 desc_lower = (act.calendar_data.description or "").lower()
                 is_chore = any(kw in title_lower or kw in desc_lower for kw in CHORE_KEYWORDS)
                 if is_chore:
+                    chore_text = (act.calendar_data.title or act.calendar_data.description or "Promemoria personale").strip()
                     task_data = todo_action.task_data if todo_action else None
                     if task_data is not None:
                         if chore_text not in task_data.task_items:

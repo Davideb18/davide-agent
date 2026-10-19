@@ -436,6 +436,6 @@ def render_sidebar(session: SessionExtractionResult):
         # ── TASTO NUOVA CHIAMATA ─────────────────────────────────────────
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
         if st.button("← Nuova Sessione", use_container_width=True, type="secondary", key="btn_new_call"):
-            for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds"]:
+            for k in ["current_session", "audio_bytes", "audio_filename", "elapsed_seconds", "text_prompt"]:
                 st.session_state[k] = None
             st.rerun()

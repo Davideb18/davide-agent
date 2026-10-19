@@ -98,9 +98,11 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
 
                     def _run_bg_export():
                         try:
-                            run_async(committer.execute_action(rem_action))
-                        except Exception:
-                            pass
+                            import asyncio
+                            asyncio.run(committer.execute_action(rem_action))
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).error(f"Errore esportazione background Promemoria: {e}")
 
                     threading.Thread(target=_run_bg_export, daemon=True).start()
                     st.session_state[f"reminders_synced_{task_action.id}"] = True

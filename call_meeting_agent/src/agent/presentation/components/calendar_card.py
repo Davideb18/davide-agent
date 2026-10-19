@@ -494,6 +494,12 @@ def render_calendar_card(action: ProposedAction, committer):
                 data.end_utc = data.start_utc + timedelta(minutes=duration_min)
                 new_monday = new_date - timedelta(days=new_date.weekday())
                 st.session_state[week_offset_key] = (new_monday - meeting_monday).days // 7
+                new_slot_text = (
+                    f"{WEEKDAYS_FULL_EN[new_start_local.weekday()]} {new_start_local.day} {MONTHS_EN[new_start_local.month-1]} at {new_start_local.strftime('%H:%M')}"
+                    if is_en else
+                    f"{WEEKDAYS_FULL_IT[new_start_local.weekday()]} {new_start_local.day} {MONTHS_IT[new_start_local.month-1]} ore {new_start_local.strftime('%H:%M')}"
+                )
+                _sync_calendar_change_to_email(action.id, new_slot_text)
                 st.rerun()
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
