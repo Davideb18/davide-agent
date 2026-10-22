@@ -46,8 +46,7 @@ class AppleRemindersAdapter:
 
         items_array_str = ", ".join(sanitized_items)
 
-        # Script AppleScript robusto e affidabile: crea ciascun promemoria nella lista di default (o lista indicata)
-        # Assicura corretta coercizione a testo e attende l'inserimento reale
+        # Script AppleScript anti-duplicati: verifica promemoria esistenti prima di crearne di nuovi
         script = f'''
         tell application "Reminders"
             set targetList to default list
@@ -58,10 +57,15 @@ class AppleRemindersAdapter:
                 set targetList to list "{clean_list_name}"
             end if
             set listDisplayName to name of targetList
+            set createdCount to 0
             repeat with itemText in {{{items_array_str}}}
-                make new reminder at targetList with properties {{name:(itemText as text)}}
+                set tName to (itemText as text)
+                if not (exists (first reminder of targetList whose name is tName and completed is false)) then
+                    make new reminder at targetList with properties {{name:tName}}
+                    set createdCount to createdCount + 1
+                end if
             end repeat
-            return listDisplayName
+            return (listDisplayName & "|" & (createdCount as text))
         end tell
         '''
 
@@ -101,9 +105,26 @@ class AppleRemindersAdapter:
             result = await asyncio.to_thread(_run_script)
 
             if result.returncode == 0:
-                count = len(sanitized_items)
-                actual_list = (result.stdout or "").strip() or list_name
-                return True, f"{count} promemoria salvati con successo nella lista '{actual_list}' di Apple Reminders."
+                stdout_str = (result.stdout or "").strip()
+                actual_list = list_name
+                created_count = len(sanitized_items)
+                if "|" in stdout_str:
+                    parts = stdout_str.split("|", 1)
+                    actual_list = parts[0].strip() or list_name
+                    try:
+                        created_count = int(parts[1].strip())
+                    except Exception:
+                        created_count = len(sanitized_items)
+                else:
+                    actual_list = stdout_str or list_name
+
+                tot_items = len(sanitized_items)
+                if created_count == 0:
+                    return True, f"Tutti i {tot_items} compiti sono già sincronizzati in Promemoria macOS (zero duplicati)."
+                elif created_count < tot_items:
+                    return True, f"{created_count} nuovi compiti aggiunti a Promemoria macOS (totale {tot_items} allineati)."
+                else:
+                    return True, f"{tot_items} promemoria salvati con successo nella lista '{actual_list}' di Apple Reminders."
 
             stderr = result.stderr.strip() if result.stderr else "Errore sconosciuto durante l'esecuzione di AppleScript."
             logger.warning(f"Errore osascript Reminders: {stderr}")
