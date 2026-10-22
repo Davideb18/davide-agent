@@ -60,7 +60,8 @@ class AppleRemindersAdapter:
             set createdCount to 0
             repeat with itemText in {{{items_array_str}}}
                 set tName to (itemText as text)
-                if not (exists (first reminder of targetList whose name is tName and completed is false)) then
+                set existingReminders to (every reminder of targetList whose name is tName and completed is false)
+                if (count of existingReminders) is 0 then
                     make new reminder at targetList with properties {{name:tName}}
                     set createdCount to createdCount + 1
                 end if

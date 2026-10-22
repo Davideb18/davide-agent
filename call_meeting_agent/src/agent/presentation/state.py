@@ -222,11 +222,8 @@ def init():
 def get_orchestrator() -> ProcessSessionUseCase:
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     extractor = GeminiExtractorAdapter(api_key=gemini_key)
-    st.session_state.extractor = extractor
-
     vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
     knowledge = ObsidianAdapter(vault_path=vault_path)
-    st.session_state.knowledge = knowledge
 
     return ProcessSessionUseCase(
         llm_extractor=extractor,
@@ -240,7 +237,6 @@ def get_orchestrator() -> ProcessSessionUseCase:
 def get_committer() -> CommitActionUseCase:
     vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
     knowledge = ObsidianAdapter(vault_path=vault_path)
-    st.session_state.knowledge = knowledge
 
     return CommitActionUseCase(
         calendar_service=st.session_state.calendar,

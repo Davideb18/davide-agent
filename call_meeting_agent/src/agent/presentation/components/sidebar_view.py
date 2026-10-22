@@ -327,10 +327,8 @@ def render_sidebar(session: SessionExtractionResult):
                                     or r_name in target_ent.raw_name.lower()
                                     or (is_self and is_self_mention(r_name, self_names))
                                 ):
-                                    if not act.email_data.recipient_email:
-                                        act.email_data.recipient_email = new_contact.email
-                                    # Resetta la chiave session_state per riflettere l'email inserita
-                                    st.session_state.pop(f"recip_email_{act.id}", None)
+                                    # Aggiorna la chiave session_state per riflettere l'email inserita senza mutare la struttura dei widget
+                                    st.session_state[f"recip_email_{act.id}"] = new_contact.email
 
                         run_async(st.session_state.repo.save_session(session))
                         st.toast(f"Contatto {new_contact.first_name} {new_contact.last_name}".strip() + " salvato con successo!", icon="👤")

@@ -151,26 +151,28 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
 
             if not rem_synced:
                 if st.button("🍎 Esporta su Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", use_container_width=True):
-                    import uuid
-                    import hashlib
-
                     latest_raw = st.session_state.get(tasks_key, edited_tasks)
                     data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
                     if not data.task_items:
                         st.warning("Nessun compito inserito da esportare.")
                     else:
-                        raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
-                        rem_action = ProposedAction(
-                            id=f"act_rem_{uuid.uuid4().hex[:8]}",
-                            session_id=task_action.session_id,
-                            action_type=ActionType.TASK_EXPORT_REMINDERS,
-                            idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
-                            task_data=TaskPayload(task_items=data.task_items),
-                        )
-
+                        rem_id = f"act_rem_{task_action.id}"
                         session = st.session_state.get("current_session")
-                        if session and not any(a.id == rem_action.id for a in session.proposed_actions):
-                            session.proposed_actions.append(rem_action)
+                        rem_action = None
+                        if session:
+                            rem_action = next((a for a in session.proposed_actions if a.id == rem_id or a.action_type == ActionType.TASK_EXPORT_REMINDERS), None)
+                        if not rem_action:
+                            rem_action = ProposedAction(
+                                id=rem_id,
+                                session_id=task_action.session_id,
+                                action_type=ActionType.TASK_EXPORT_REMINDERS,
+                                idempotency_key=f"idemp_{rem_id}",
+                                task_data=TaskPayload(task_items=data.task_items),
+                            )
+                            if session:
+                                session.proposed_actions.append(rem_action)
+                        else:
+                            rem_action.task_data = TaskPayload(task_items=data.task_items)
 
                         with st.spinner("Sincronizzazione in corso con Promemoria macOS..."):
                             try:
@@ -204,26 +206,28 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
                     unsafe_allow_html=True,
                 )
                 if st.button("🍎 Salva / Aggiorna su Promemoria macOS", key=f"btn_resave_reminders_{task_action.id}", use_container_width=True):
-                    import uuid
-                    import hashlib
-
                     latest_raw = st.session_state.get(tasks_key, edited_tasks)
                     data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
                     if not data.task_items:
                         st.warning("Nessun compito inserito da aggiornare.")
                     else:
-                        raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
-                        rem_action = ProposedAction(
-                            id=f"act_rem_{uuid.uuid4().hex[:8]}",
-                            session_id=task_action.session_id,
-                            action_type=ActionType.TASK_EXPORT_REMINDERS,
-                            idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
-                            task_data=TaskPayload(task_items=data.task_items),
-                        )
-
+                        rem_id = f"act_rem_{task_action.id}"
                         session = st.session_state.get("current_session")
-                        if session and not any(a.id == rem_action.id for a in session.proposed_actions):
-                            session.proposed_actions.append(rem_action)
+                        rem_action = None
+                        if session:
+                            rem_action = next((a for a in session.proposed_actions if a.id == rem_id or a.action_type == ActionType.TASK_EXPORT_REMINDERS), None)
+                        if not rem_action:
+                            rem_action = ProposedAction(
+                                id=rem_id,
+                                session_id=task_action.session_id,
+                                action_type=ActionType.TASK_EXPORT_REMINDERS,
+                                idempotency_key=f"idemp_{rem_id}",
+                                task_data=TaskPayload(task_items=data.task_items),
+                            )
+                            if session:
+                                session.proposed_actions.append(rem_action)
+                        else:
+                            rem_action.task_data = TaskPayload(task_items=data.task_items)
 
                         with st.spinner("Aggiornamento su Promemoria macOS in corso..."):
                             try:
