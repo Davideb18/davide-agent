@@ -298,3 +298,82 @@ Corpo storico del contatto.
     assert not (adapter.contacts_dir / "Filippo_Calzavara.md").exists()
 
 
+@pytest.mark.asyncio
+async def test_record_email_interaction_creates_and_deduplicates(test_obsidian: ObsidianAdapter, test_vault_path: Path):
+    """Verifica che record_email_interaction aggiorni la scheda contatto con l'email inviata e gestisca la deduplicazione."""
+    from src.agent.domain.models import EmailPayload
+
+    email_payload = EmailPayload(
+        recipient_name="Filippo Calzavara",
+        recipient_email="filippo@trellis.so",
+        subject="Follow-up Allineamento Commerciale",
+        body_markdown="Ciao Filippo,\n\nTi invio il riassunto dell'accordo sui volumi al 3%.\n\nA presto,\nDavide",
+    )
+
+    # 1. Registra prima email per il contatto
+    ok = await test_obsidian.record_email_interaction(
+        person_name="Filippo Calzavara",
+        email_data=email_payload,
+        status_label="Bozza salvata in Gmail",
+    )
+    assert ok is True
+
+    dossier_path = test_obsidian.contacts_dir / "Filippo_Calzavara.md"
+    assert dossier_path.exists()
+    content = dossier_path.read_text(encoding="utf-8")
+
+    assert "# Filippo Calzavara" in content
+    assert "# [[Filippo Calzavara]]" not in content  # Nessun ghost wikilink nel titolo
+    assert "## ✉️ Email & Bozze Collegate" in content
+    assert "Follow-up Allineamento Commerciale" in content
+    assert "filippo@trellis.so" in content
+
+    # 2. Registra la stessa email una seconda volta (idempotenza / deduplicazione)
+    ok2 = await test_obsidian.record_email_interaction(
+        person_name="Filippo Calzavara",
+        email_data=email_payload,
+        status_label="Bozza salvata in Gmail",
+    )
+    assert ok2 is True
+
+    content_after = dossier_path.read_text(encoding="utf-8")
+    # L'oggetto deve comparire una sola volta
+    count = content_after.count("Follow-up Allineamento Commerciale")
+    assert count == 1, f"Atteso 1 riscontro per l'oggetto email, trovati: {count}"
+
+
+@pytest.mark.asyncio
+async def test_canonical_three_structures_and_tasks_dedup(tmp_path: Path):
+    """Verifica la creazione automatica delle 3 cartelle canoniche (PEOPLE, MEETINGS, TASKS) e la deduplicazione dei compiti."""
+    vault_dir = tmp_path / "My_Clean_Brain"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    (vault_dir / "PEOPLE").mkdir()
+
+    adapter = ObsidianAdapter(vault_path=str(vault_dir))
+
+    # Verifica percorsi canonici
+    assert adapter.contacts_dir == vault_dir / "PEOPLE"
+    assert adapter.meetings_dir == vault_dir / "MEETINGS"
+    assert adapter.tasks_dir == vault_dir / "TASKS"
+    assert adapter.tasks_file == vault_dir / "TASKS" / "Tasks.md"
+
+    # Append tasks
+    payload = TaskPayload(
+        target_project="Trellis",
+        task_items=["Controllare metriche", "Configurare webhook"],
+        assignee="Davide",
+    )
+
+    path1 = await adapter.append_tasks(payload, meeting_ref="Meeting Sync")
+    assert Path(path1).exists()
+    c1 = Path(path1).read_text(encoding="utf-8")
+    assert "Controllare metriche" in c1
+    assert "[[Meeting Sync]]" not in c1  # Nessun ghost link
+
+    # Re-append identico: non deve duplicare
+    path2 = await adapter.append_tasks(payload, meeting_ref="Meeting Sync")
+    c2 = Path(path2).read_text(encoding="utf-8")
+    assert c2.count("Controllare metriche") == 1
+
+
+

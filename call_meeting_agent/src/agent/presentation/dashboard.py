@@ -37,13 +37,19 @@ def _render_summary_banner(session: SessionExtractionResult):
                     st.session_state[k] = None
                 st.rerun()
 
-        # Badge partecipanti
+        # Badge partecipanti (Lookup O(1) in memoria, zero query N+1 - BUG-08)
+        contacts_map = {}
+        if hasattr(st.session_state, "repo") and st.session_state.repo:
+            try:
+                all_contacts = run_async(st.session_state.repo.get_contacts()) or []
+                contacts_map = {c.id: c for c in all_contacts}
+            except Exception:
+                contacts_map = {}
+
         pills_html = "<div style='display:flex; flex-wrap:wrap; gap:6px; margin: 10px 0;'>"
         for ent in session.entities:
             if ent.matched_contact_id:
-                contact = None
-                if hasattr(st.session_state, "repo") and st.session_state.repo:
-                    contact = run_async(st.session_state.repo.get_contact_by_id(ent.matched_contact_id))
+                contact = contacts_map.get(ent.matched_contact_id)
                 name = f"{contact.first_name} {contact.last_name}" if contact else ent.raw_name
                 pills_html += f"<span class='aria-pill aria-pill-blue'>👤 {html.escape(name)}</span>"
             elif ent.is_ambiguous:

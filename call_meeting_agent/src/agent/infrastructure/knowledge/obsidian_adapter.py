@@ -12,6 +12,7 @@ from ...domain.models import (
     SessionExtractionResult,
     Contact,
     UserProfile,
+    EmailPayload,
 )
 from ...domain.enums import ActionType, ActionStatus
 
@@ -19,30 +20,69 @@ from ...domain.enums import ActionType, ActionStatus
 class ObsidianAdapter:
     """
     Adattatore per Knowledge Base e Second Brain (Obsidian):
-    Organizza in modo pulito e logico:
-      - ACTIVITY/Meetings/ o meetings/ : Note dettagliate degli incontri con metadati e backlink.
-      - PEOPLE/ o contacts/            : Dossier viventi e schede contatto arricchite nel tempo.
-      - Projects/Tasks.md o Tasks.md   : Checklist operative delle cose da fare concordate.
+    Organizza in modo pulito e logico in 3 strutture canoniche:
+      - PEOPLE/   : Dossier viventi per ogni utente con dettagli, preferenze ed email inviate.
+      - MEETINGS/ : Note dettagliate degli appuntamenti con data, partecipanti e backlink.
+      - TASKS/    : Checklist operative delle cose da fare concordate (Tasks.md).
     """
 
     def __init__(self, vault_path: Optional[str] = None) -> None:
         raw_path = vault_path or os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
         self.vault_path = Path(raw_path).expanduser().resolve()
 
-        # Rilevamento della struttura del Vault
-        if (self.vault_path / "ACTIVITY").exists():
-            self.meetings_dir = self.vault_path / "ACTIVITY" / "Meetings"
+        # Rilevamento e supporto delle 3 strutture canoniche del Vault:
+        # 1. Cartella Utenti / Contatti
+        if (self.vault_path / "PEOPLE").exists():
             self.contacts_dir = self.vault_path / "PEOPLE"
-        else:
-            # Fallback standard per vault isolati o cartelle demo
-            self.meetings_dir = self.vault_path / "meetings"
+        elif (self.vault_path / "contacts").exists():
             self.contacts_dir = self.vault_path / "contacts"
+        else:
+            self.contacts_dir = self.vault_path / "PEOPLE"
+
+        # 2. Cartella Appuntamenti / Meeting
+        if (self.vault_path / "MEETINGS").exists():
+            self.meetings_dir = self.vault_path / "MEETINGS"
+        elif (self.vault_path / "ACTIVITY" / "Meetings").exists():
+            self.meetings_dir = self.vault_path / "ACTIVITY" / "Meetings"
+        elif (self.vault_path / "meetings").exists():
+            self.meetings_dir = self.vault_path / "meetings"
+        else:
+            self.meetings_dir = (
+                self.vault_path / "MEETINGS"
+                if (self.vault_path / "PEOPLE").exists()
+                else self.vault_path / "meetings"
+            )
+
+        # 3. Cartella & File Task
+        if (self.vault_path / "TASKS").exists():
+            self.tasks_dir = self.vault_path / "TASKS"
+            self.tasks_file = self.tasks_dir / "Tasks.md"
+        elif (self.vault_path / "ACTIVITY" / "Projects" / "Tasks.md").exists():
+            self.tasks_dir = self.vault_path / "ACTIVITY" / "Projects"
+            self.tasks_file = self.tasks_dir / "Tasks.md"
+        elif (self.vault_path / "Tasks.md").exists():
+            self.tasks_dir = self.vault_path
+            self.tasks_file = self.vault_path / "Tasks.md"
+        else:
+            self.tasks_dir = (
+                self.vault_path / "TASKS"
+                if (self.vault_path / "PEOPLE").exists()
+                else self.vault_path
+            )
+            self.tasks_file = (
+                (self.tasks_dir / "Tasks.md")
+                if self.tasks_dir != self.vault_path
+                else (self.vault_path / "Tasks.md")
+            )
 
         os.makedirs(self.meetings_dir, exist_ok=True)
         os.makedirs(self.contacts_dir, exist_ok=True)
+        if self.tasks_dir != self.vault_path:
+            os.makedirs(self.tasks_dir, exist_ok=True)
 
-        # Assicura il collegamento in Home.md se presente
+        # Assicura il collegamento in Home.md se presente e sincronizza gli hub
         self._ensure_home_dashboard_links()
+        self._sync_hubs()
 
     def _slugify(self, text: str) -> str:
         """Pulisce un testo per usarlo in sicurezza come nome file."""
@@ -50,25 +90,140 @@ class ObsidianAdapter:
         text = re.sub(r"[^\w\s-]", "", text)
         return re.sub(r"[-\s]+", "_", text)
 
+    def _ensure_people_hub_entry(self, person_name: str, person_stem: str) -> None:
+        """Assicura che la persona sia indicizzata nel file hub PEOPLE/People.md."""
+        if person_stem.lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+            return
+        hub_file = self.contacts_dir / "People.md"
+        if not hub_file.exists():
+            initial = (
+                "---\ntitle: \"Registro Utenti & Profili\"\ntype: hub\ntags:\n  - people\n  - network\n---\n\n"
+                "# 👥 Registro Utenti & Profili\n\n"
+                "Hub centrale di tutti i contatti, profili e relazioni gestite dall'Executive AI Agent.\n"
+                "Torna alla [[Home|Dashboard Principale]].\n\n---\n\n"
+                "## 👥 Elenco Profili & Contatti\n"
+            )
+            hub_file.write_text(initial, encoding="utf-8")
+
+        try:
+            content = hub_file.read_text(encoding="utf-8")
+            link_str = f"[[{person_stem}|{person_name}]]"
+            if person_stem not in content and link_str not in content:
+                with open(hub_file, "a", encoding="utf-8") as f:
+                    f.write(f"- {link_str}\n")
+        except Exception:
+            pass
+
+    def _ensure_meetings_hub_entry(
+        self, date_str: str, meeting_stem: str, meeting_title: str, person_name: str
+    ) -> None:
+        """Assicura che la riunione sia indicizzata nel file hub MEETINGS/Meetings.md."""
+        if meeting_stem.lower() in ("meetings", "meeting", "index", "overview", "people", "tasks", "home"):
+            return
+        hub_file = self.meetings_dir / "Meetings.md"
+        if not hub_file.exists():
+            initial = (
+                "---\ntitle: \"Registro Appuntamenti & Meeting\"\ntype: hub\ntags:\n  - meetings\n  - calendar\n---\n\n"
+                "# 🗓️ Registro Appuntamenti & Meeting\n\n"
+                "Hub centrale di tutti gli incontri e le call gestite dall'Executive AI Agent.\n"
+                "Torna alla [[Home|Dashboard Principale]].\n\n---\n\n"
+                "## 📌 Elenco Appuntamenti & Riunioni\n"
+            )
+            hub_file.write_text(initial, encoding="utf-8")
+
+        try:
+            content = hub_file.read_text(encoding="utf-8")
+            if meeting_stem not in content:
+                p_part = f" — con {person_name}" if person_name else ""
+                line = f"- 🗓️ **{date_str}**: [[{meeting_stem}|{meeting_title}]]{p_part}\n"
+                with open(hub_file, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except Exception:
+            pass
+
+    def _sync_hubs(self) -> None:
+        """Sincronizza e popola automaticamente gli hub People.md e Meetings.md con i file presenti."""
+        try:
+            # 1. Popola People.md con tutti i contatti in PEOPLE/
+            people_hub = self.contacts_dir / "People.md"
+            if not people_hub.exists():
+                initial = (
+                    "---\ntitle: \"Registro Utenti & Profili\"\ntype: hub\ntags:\n  - people\n  - network\n---\n\n"
+                    "# 👥 Registro Utenti & Profili\n\n"
+                    "Hub centrale di tutti i contatti, profili e relazioni gestite dall'Executive AI Agent.\n"
+                    "Torna alla [[Home|Dashboard Principale]].\n\n---\n\n"
+                    "## 👥 Elenco Profili & Contatti\n"
+                )
+                people_hub.write_text(initial, encoding="utf-8")
+
+            hub_content = people_hub.read_text(encoding="utf-8")
+            to_append_p = []
+            for f in sorted(self.contacts_dir.glob("*.md")):
+                if f.stem.lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+                    continue
+                clean_name = f.stem.replace("_", " ")
+                if f.stem not in hub_content:
+                    to_append_p.append(f"- [[{f.stem}|{clean_name}]]\n")
+            if to_append_p:
+                with open(people_hub, "a", encoding="utf-8") as pf:
+                    pf.writelines(to_append_p)
+
+            # 2. Popola Meetings.md con tutti i meeting in MEETINGS/
+            meetings_hub = self.meetings_dir / "Meetings.md"
+            if not meetings_hub.exists():
+                initial = (
+                    "---\ntitle: \"Registro Appuntamenti & Meeting\"\ntype: hub\ntags:\n  - meetings\n  - calendar\n---\n\n"
+                    "# 🗓️ Registro Appuntamenti & Meeting\n\n"
+                    "Hub centrale di tutti gli incontri e le call gestite dall'Executive AI Agent.\n"
+                    "Torna alla [[Home|Dashboard Principale]].\n\n---\n\n"
+                    "## 📌 Elenco Appuntamenti & Riunioni\n"
+                )
+                meetings_hub.write_text(initial, encoding="utf-8")
+
+            m_content = meetings_hub.read_text(encoding="utf-8")
+            to_append_m = []
+            for f in sorted(self.meetings_dir.glob("*.md")):
+                if f.stem.lower() in ("meetings", "meeting", "index", "overview", "people", "tasks", "home"):
+                    continue
+                if f.stem not in m_content:
+                    date_match = re.match(r"^(\d{4}-\d{2}-\d{2})_(.*)$", f.stem)
+                    if date_match:
+                        d_str, s_str = date_match.group(1), date_match.group(2)
+                        title_clean = s_str.replace("_", " ").title()
+                    else:
+                        d_str, title_clean = "Archivio", f.stem.replace("_", " ").title()
+                    to_append_m.append(f"- 🗓️ **{d_str}**: [[{f.stem}|{title_clean}]]\n")
+            if to_append_m:
+                with open(meetings_hub, "a", encoding="utf-8") as mf:
+                    mf.writelines(to_append_m)
+        except Exception:
+            pass
+
     def _ensure_home_dashboard_links(self) -> None:
-        """Aggiorna la Dashboard Home.md se presente nel Second Brain per includere la sezione People & Meetings."""
+        """Aggiorna la Dashboard Home.md se presente nel Second Brain per garantire che i 3 rami (People, Meetings, Tasks) siano i soli collegati per l'agente."""
         home_path = self.vault_path / "Home.md"
         if not home_path.exists():
             return
 
         try:
-            with open(home_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = home_path.read_text(encoding="utf-8")
 
-            if "## 👥 Network & Relazioni" not in content:
-                network_section = (
-                    "\n## 👥 Network & Relazioni (Executive Agent)\n"
-                    "Persone, meeting e decisioni tracciate in tempo reale dall'Executive AI Agent.\n"
-                    "- **Dossier Contatti**: consulta le schede in `PEOPLE/`\n"
-                    "- **Storico Riunioni**: note di allineamento e accordi in `ACTIVITY/Meetings/`\n"
-                )
-                with open(home_path, "a", encoding="utf-8") as f:
-                    f.write(network_section)
+            canonical_exec_section = (
+                "## 👥 Gestione Esecutiva (Executive Agent)\n"
+                "I tre rami operativi gestiti in tempo reale dall'Executive AI Agent:\n"
+                "- **👥 Utenti & Profili**: [[People|Registro Utenti & Profili]]\n"
+                "- **🗓️ Appuntamenti & Meeting**: [[Meetings|Registro Appuntamenti & Meeting]]\n"
+                "- **📋 Task Operativi**: [[Tasks|Registro Task & To-Do]]\n"
+            )
+
+            pattern = r"(##\s*👥\s*(?:Network|Gestione Esecutiva).*?)(?=\n##|\Z)"
+            if re.search(pattern, content, re.DOTALL):
+                new_content = re.sub(pattern, canonical_exec_section, content, count=1, flags=re.DOTALL)
+            else:
+                new_content = content.rstrip() + "\n\n" + canonical_exec_section
+
+            if new_content != content:
+                home_path.write_text(new_content, encoding="utf-8")
         except Exception:
             pass
 
@@ -83,12 +238,6 @@ class ObsidianAdapter:
         # Costruisce i bi-directional link in formato Obsidian: [[Nome]]
         backlinks_str = " ".join([f"[[{link}]]" for link in payload.backlinks if link != payload.target_person_name])
         insights_str = "\n".join([f"- {insight}" for insight in payload.bullet_insights])
-
-        # Se menziona Trellis o CRM, colleghiamo anche Cold_Outreach_CRM
-        extra_project_links = ""
-        if "trellis" in payload.title.lower() or any("trellis" in b.lower() for b in payload.backlinks):
-            if (self.vault_path / "ACTIVITY" / "Projects" / "Internship_Hunt" / "Cold_Outreach_CRM.md").exists():
-                extra_project_links = " [[Cold_Outreach_CRM]] [[Internship_Hunt]]"
 
         tags_yaml = "\n".join([f"  - {self._slugify(b)}" for b in payload.backlinks[:4]])
 
@@ -106,7 +255,8 @@ tags:
 
 - **Data:** {date_str}
 - **Partecipante principale:** [[{payload.target_person_name}]]
-- **Connessioni & Argomenti:** {backlinks_str}{extra_project_links}
+- **Hub Riunioni:** [[Meetings]]
+- **Connessioni & Argomenti:** {backlinks_str}
 
 ---
 
@@ -122,6 +272,14 @@ tags:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(markdown_body)
 
+        # Aggiorna automaticamente l'indice centrale Meetings.md
+        self._ensure_meetings_hub_entry(
+            date_str=date_str,
+            meeting_stem=file_path.stem,
+            meeting_title=payload.title,
+            person_name=payload.target_person_name,
+        )
+
         return str(file_path)
 
     async def update_person_dossier(
@@ -135,18 +293,23 @@ tags:
 
         # Se il file della persona non esiste ancora, crea la scheda iniziale con frontmatter
         if not file_path.exists():
+            first_part = clean_name.split()[0] if clean_name else "Contatto"
             initial_content = f"""---
 name: "{clean_name}"
 type: person
 tags:
   - contact
   - network
+aliases:
+  - "{first_part}"
+  - "{clean_name}"
 created: {now_str}
 ---
 
-# [[{clean_name}]]
+# {clean_name}
 
 - **Tipo:** Dossier Persona / Relazione Professionale
+- **Hub Profili:** [[People]]
 - **Creato il:** {now_str}
 
 ## 📌 Profilo & Preferenze Note
@@ -154,31 +317,52 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
 
 ---
 
+## ✉️ Email & Bozze Collegate
+- Nessuna email registrata recentemente.
+
+---
+
 ## 📜 Storico Interazioni & Riunioni
 """
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(initial_content)
+            self._ensure_people_hub_entry(clean_name, file_path.stem)
+
+        # Normalizza il riferimento al meeting evitando ghost links
+        ref_str = ""
+        if meeting_ref and meeting_ref.strip():
+            m_clean = meeting_ref.strip()
+            if m_clean not in ("Meeting Sync", "Task Session", "Generale"):
+                stem = Path(m_clean).stem
+                ref_str = f" (Rif: [[{stem}|{m_clean}]])" if stem != m_clean else f" (Rif: [[{m_clean}]])"
+
+        existing_text = ""
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing_text = f.read()
+        except Exception:
+            pass
 
         # Aggiunge i nuovi insight emersi oggi in coda al file
-        append_content = f"\n### 🗓️ Interazione del {now_str} (Rif: [[{meeting_ref}]])\n"
+        append_content = f"\n### 🗓️ Interazione del {now_str}{ref_str}\n"
         if new_insights:
             for item in new_insights:
-                append_content += f"- {item}\n"
+                # Deduplicazione base
+                if item not in existing_text:
+                    append_content += f"- {item}\n"
         else:
             append_content += "- Chiamata di allineamento generale.\n"
 
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(append_content)
+        if append_content.strip() != f"### 🗓️ Interazione del {now_str}{ref_str}":
+            with open(file_path, "a", encoding="utf-8") as f:
+                f.write(append_content)
 
         return str(file_path)
 
     async def append_tasks(self, payload: TaskPayload, meeting_ref: str) -> str:
-        """Salva o aggiorna una checklist di task operativi nella cartella Projects/Tasks.md."""
+        """Salva o aggiorna una checklist di task operativi nella cartella TASKS/Tasks.md."""
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if (self.vault_path / "ACTIVITY" / "Projects").exists():
-            tasks_file = self.vault_path / "ACTIVITY" / "Projects" / "Tasks.md"
-        else:
-            tasks_file = self.vault_path / "Tasks.md"
+        tasks_file = self.tasks_file
 
         if not tasks_file.exists():
             initial = (
@@ -189,13 +373,37 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
             with open(tasks_file, "w", encoding="utf-8") as f:
                 f.write(initial)
 
+        existing_text = ""
+        try:
+            with open(tasks_file, "r", encoding="utf-8") as f:
+                existing_text = f.read()
+        except Exception:
+            pass
+
         assignee_tag = f" (@{payload.assignee})" if payload.assignee else ""
         proj_str = f" [Progetto: [[{payload.target_project}]]]" if payload.target_project else ""
-        header = f"\n### 🗓️ Task concordati il {now_str} (Rif: [[{meeting_ref}]]{proj_str})\n"
+
+        # Formatta il riferimento meeting escludendo ghost link come "Meeting Sync"
+        ref_str = ""
+        if meeting_ref and meeting_ref.strip():
+            m_clean = meeting_ref.strip()
+            if m_clean not in ("Meeting Sync", "Task Session", "Generale"):
+                stem = Path(m_clean).stem
+                ref_str = f" (Rif: [[{stem}|{m_clean}]])" if stem != m_clean else f" (Rif: [[{m_clean}]])"
+
+        header = f"\n### 🗓️ Task concordati il {now_str}{ref_str}{proj_str}\n"
 
         items_str = ""
         for item in payload.task_items:
-            items_str += f"- [ ] {item.strip()}{assignee_tag}\n"
+            clean_item = item.strip()
+            task_line = f"- [ ] {clean_item}{assignee_tag}"
+            # Deduplicazione: non aggiungere due volte lo stesso identico task
+            if task_line not in existing_text and clean_item not in existing_text:
+                items_str += f"{task_line}\n"
+
+        if not items_str:
+            # Tutti i task sono già registrati nel Second Brain
+            return str(tasks_file)
 
         with open(tasks_file, "a", encoding="utf-8") as f:
             f.write(header + items_str)
@@ -211,6 +419,8 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
 
     def _find_person_file(self, person_name: str) -> Optional[Path]:
         """Individua in modo flessibile il file markdown del contatto cercando in tutte le cartelle contatti."""
+        if person_name.strip().lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+            return None
         safe_name = self._safe_person_filename(person_name)
         candidate_dirs = [self.contacts_dir, self.vault_path / "PEOPLE", self.vault_path / "contacts"]
         seen = set()
@@ -225,10 +435,12 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
             if not d.exists():
                 continue
             p = d / safe_name
-            if p.exists():
+            if p.exists() and p.stem.lower() not in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
                 return p
             clean = person_name.strip().replace(" ", "_").lower()
             for f in d.glob("*.md"):
+                if f.stem.lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+                    continue
                 if f.stem.lower() == clean or f.stem.lower() == person_name.strip().lower():
                     return f
         return None
@@ -318,18 +530,23 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
         # 1. Se il dossier non esiste, lo crea con la struttura base
         if not file_path.exists():
             clean_name = person_name.strip()
+            first_part = clean_name.split()[0] if clean_name else "Contatto"
             initial_content = f"""---
 name: "{clean_name}"
 type: person
 tags:
   - contact
   - network
+aliases:
+  - "{first_part}"
+  - "{clean_name}"
 created: {now_str}
 ---
 
-# [[{clean_name}]]
+# {clean_name}
 
 - **Tipo:** Dossier Persona / Relazione Professionale
+- **Hub Profili:** [[People]]
 - **Creato il:** {now_str}
 
 ## 📌 Profilo & Preferenze Note
@@ -337,10 +554,16 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
 
 ---
 
+## ✉️ Email & Bozze Collegate
+- Nessuna email registrata recentemente.
+
+---
+
 ## 📜 Storico Interazioni & Riunioni
 """
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(initial_content)
+            self._ensure_people_hub_entry(clean_name, file_path.stem)
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -357,7 +580,22 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                 bullets.append("- Incontro di allineamento e sincronizzazione operativa.")
 
             entry_body = "\n".join(bullets)
-            entry = f"\n### 🗓️ Interazione del {now_str} (Rif: [[{meeting_rel_path}|{meeting_title}]])\n{entry_body}\n"
+
+            # Assicura percorso relativo per il wikilink
+            clean_rel = meeting_rel_path
+            try:
+                p = Path(meeting_rel_path)
+                if p.is_absolute() and self.vault_path in p.parents:
+                    clean_rel = str(p.relative_to(self.vault_path))
+            except Exception:
+                pass
+
+            # Evita duplicati se lo stesso meeting è già collegato nella scheda
+            link_marker = f"[[{clean_rel}|{meeting_title}]]"
+            if link_marker in existing_text:
+                return True
+
+            entry = f"\n### 🗓️ Interazione del {now_str} (Rif: {link_marker})\n{entry_body}\n"
 
             # Inserimento atomico: cerca header storico con regex flessibile (con o senza emoji)
             header_pattern = r"(##\s*(?:📜\s*)?(?:Storico\s*Interazioni(?:\s*&\s*Riunioni)?|Incontri\s*Recenti))"
@@ -372,6 +610,122 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
             tmp_path = file_path.with_suffix(".md.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(new_text)
+            tmp_path.replace(file_path)
+            return True
+        except Exception:
+            return False
+
+    async def record_email_interaction(
+        self,
+        person_name: str,
+        email_data: EmailPayload,
+        status_label: str = "Bozza / Email registrata",
+    ) -> bool:
+        """Registra un'interazione email (bozza salvata o email inviata) nella scheda del contatto in PEOPLE/."""
+        if not person_name or not person_name.strip():
+            return False
+
+        clean_name = person_name.strip()
+        filename = self._safe_person_filename(clean_name)
+        file_path = self._find_person_file(clean_name) or (self.contacts_dir / filename)
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Se il dossier non esiste ancora, lo crea con la struttura canonica
+        if not file_path.exists():
+            first_part = clean_name.split()[0] if clean_name else "Contatto"
+            recipient_em = email_data.recipient_email or ""
+            initial_content = f"""---
+name: "{clean_name}"
+type: person
+email: "{recipient_em}"
+company: "N/D"
+role: "Contatto"
+timezone: "Europe/Rome"
+tags:
+  - contact
+  - network
+aliases:
+  - "{first_part}"
+  - "{clean_name}"
+created: {now_str}
+---
+
+# {clean_name}
+
+- **Tipo:** Dossier Persona / Relazione Professionale
+- **Hub Profili:** [[People]]
+- **Email:** {recipient_em or 'N/D'}
+- **Creato il:** {now_str}
+
+## 📌 Profilo & Preferenze Note
+Scheda arricchita automaticamente dall'Executive AI Agent.
+
+---
+
+## ✉️ Email & Bozze Collegate
+
+---
+
+## 📜 Storico Interazioni & Riunioni
+"""
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(initial_content)
+            self._ensure_people_hub_entry(clean_name, file_path.stem)
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing_text = f.read()
+
+            # Aggiorna email nel frontmatter se precedentemente vuota
+            new_text = existing_text
+            if email_data.recipient_email and 'email: ""' in new_text:
+                new_text = new_text.replace('email: ""', f'email: "{email_data.recipient_email}"', 1)
+
+            # Snippet del corpo
+            snippet = (email_data.body_markdown or "").strip()
+            quoted = "\n> ".join([line for line in snippet.splitlines()[:5] if line.strip()])
+            if not quoted:
+                quoted = "Bozza predisposta per l'invio."
+
+            email_entry = f"""### ✉️ Email del {now_str}: {email_data.subject or 'Senza Oggetto'}
+- **Destinatario**: {email_data.recipient_name or clean_name} <{email_data.recipient_email or 'N/D'}>
+- **Stato**: {status_label}
+- **Estratto**:
+> {quoted}
+"""
+
+            # Deduplicazione: non inserire due volte la stessa identica email
+            check_key = f"{now_str}: {email_data.subject}"
+            if check_key in new_text:
+                if new_text != existing_text:
+                    tmp_path = file_path.with_suffix(".md.tmp")
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        f.write(new_text)
+                    tmp_path.replace(file_path)
+                return True
+
+            # Inserimento nella sezione Email & Bozze
+            email_header_pat = r"(##\s*(?:✉️\s*)?(?:Email\s*&\s*Bozze(?:\s*Collegate)?|Email\s*&\s*Comunicazioni))"
+            m = re.search(email_header_pat, new_text, re.IGNORECASE)
+            if m:
+                idx = m.end()
+                final_text = new_text[:idx] + "\n\n" + email_entry + "\n" + new_text[idx:]
+            else:
+                hist_pat = r"(##\s*(?:📜\s*)?(?:Storico\s*Interazioni|Incontri))"
+                hm = re.search(hist_pat, new_text, re.IGNORECASE)
+                if hm:
+                    idx = hm.start()
+                    final_text = (
+                        new_text[:idx]
+                        + f"## ✉️ Email & Bozze Collegate\n\n{email_entry}\n---\n\n"
+                        + new_text[idx:]
+                    )
+                else:
+                    final_text = new_text + f"\n\n## ✉️ Email & Bozze Collegate\n\n{email_entry}\n"
+
+            tmp_path = file_path.with_suffix(".md.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(final_text)
             tmp_path.replace(file_path)
             return True
         except Exception:
@@ -531,6 +885,8 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
 
     def _parse_contact_file(self, filepath: Path) -> Optional[Contact]:
         """Estrae un oggetto Contact dai metadati frontmatter di un file Markdown."""
+        if filepath.stem.lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+            return None
         try:
             content = filepath.read_text(encoding="utf-8")
             fm: Dict[str, str] = {}
@@ -542,6 +898,9 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                     if ":" in line and not line.strip().startswith("-"):
                         k, _, v = line.partition(":")
                         fm[k.strip().lower()] = v.strip().strip('"').strip("'")
+
+            if fm.get("type", "").lower() in ("hub", "index"):
+                return None
 
             full_name = fm.get("name", filepath.stem.replace("_", " "))
             parts = full_name.split(" ", 1) if full_name else [filepath.stem, ""]
@@ -618,6 +977,8 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
             if not cdir.exists():
                 continue
             for filepath in sorted(cdir.glob("*.md")):
+                if filepath.stem.lower() in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+                    continue
                 if filepath.stem.lower() in seen_stems:
                     continue
                 seen_stems.add(filepath.stem.lower())
@@ -660,16 +1021,19 @@ created: {now_str}
         if file_path.exists():
             try:
                 content = file_path.read_text(encoding="utf-8")
-                # Sostituisce solo il frontmatter, preserva il corpo storico
-                new_content = re.sub(
-                    r"^---\s*\n.*?\n---",
-                    new_fm,
-                    content,
-                    count=1,
-                    flags=re.DOTALL,
-                )
-                if new_content == content:
-                    new_content = new_fm + "\n\n" + content
+                # Rimuove BOM e spazi iniziali per evitare duplicazione di frontmatter (BUG-06)
+                clean_content = content.lstrip("\ufeff \t\r\n")
+                if clean_content.startswith("---"):
+                    new_content = re.sub(
+                        r"^---\s*\n.*?\n---(?:\s*\n)?",
+                        new_fm + "\n\n",
+                        clean_content,
+                        count=1,
+                        flags=re.DOTALL,
+                    )
+                else:
+                    new_content = new_fm + "\n\n" + clean_content
+
                 tmp_path = file_path.with_suffix(".md.tmp")
                 tmp_path.write_text(new_content, encoding="utf-8")
                 tmp_path.replace(file_path)
@@ -678,9 +1042,10 @@ created: {now_str}
         else:
             initial = f"""{new_fm}
 
-# [[{full_name}]]
+# {full_name}
 
 - **Tipo:** Dossier Persona / Relazione Professionale
+- **Hub Profili:** [[People]]
 - **Creato il:** {now_str}
 
 ## 📌 Profilo & Preferenze Note
@@ -688,10 +1053,16 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
 
 ---
 
+## ✉️ Email & Bozze Collegate
+- Nessuna email registrata recentemente.
+
+---
+
 ## 📜 Storico Interazioni & Riunioni
 """
             file_path.write_text(initial, encoding="utf-8")
 
+        self._ensure_people_hub_entry(full_name, file_path.stem)
         return str(file_path)
 
     async def get_vault_graph_data(
@@ -784,11 +1155,13 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                                 category = "person"
                             elif "meeting" in rel_lower:
                                 category = "meeting"
-                            elif "project" in rel_lower or "task" in rel_lower:
+                            elif "task" in rel_lower:
+                                category = "task"
+                            elif "project" in rel_lower:
                                 category = "project"
 
                             node_color = "#A882FF" if is_mod else "#9E9EA7"
-                            nid = f"note_{self._slugify(display_title)}"
+                            nid = f"note_{self._slugify(full_p.stem)}"
 
                             add_node(
                                 node_id=nid,
@@ -807,10 +1180,11 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                             wikilinks = re.findall(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]", content)
                             for raw_target, alias in wikilinks:
                                 target_clean = raw_target.strip()
-                                if not target_clean or target_clean == display_title:
+                                stem_target = Path(target_clean).stem
+                                if not target_clean or stem_target == full_p.stem or target_clean == display_title:
                                     continue
-                                target_id = f"note_{self._slugify(target_clean)}"
-                                target_display = alias.strip() if alias else Path(target_clean).stem.replace("_", " ")
+                                target_id = f"note_{self._slugify(stem_target)}"
+                                target_display = alias.strip() if alias else stem_target.replace("_", " ")
                                 add_node(
                                     node_id=target_id,
                                     name=target_display,

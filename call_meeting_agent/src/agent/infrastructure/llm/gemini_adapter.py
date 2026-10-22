@@ -21,6 +21,7 @@ from ...domain.models import (
     PersonHistorySummary,
 )
 from ...domain.enums import ActionStatus, ActionType, IntentCategory
+from ...domain.datetime_utils import clean_spoken_email
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class GeminiExtractorAdapter:
         user_profile_language: Optional[str] = None,
         user_name: Optional[str] = None,
         user_email: Optional[str] = None,
+        known_contacts_summary: Optional[List[str]] = None,
     ) -> str:
         """Costruisce le istruzioni di sistema per Gemini con vincoli temporali, linguistici e identità utente."""
         if user_profile_language:
@@ -105,6 +107,17 @@ Regole:
   * Se l'email è per l'utente stesso, il campo `recipient_name` deve essere '{effective_name}' (non 'Me', non 'Me stesso').
 """
 
+        contacts_block = ""
+        if known_contacts_summary:
+            c_lines = "\n".join(f"  * {c}" for c in known_contacts_summary)
+            contacts_block = f"""
+RUBRICA CONTATTI NOTI (SECOND BRAIN):
+{c_lines}
+REGOLE RICONOSCIMENTO CONTATTI NOTI:
+- Se l'utente cita una persona associandola alla sua azienda/progetto (es. 'Filippo Trellis', 'Filippo di Trellis', 'Filippo Trilli'), riconducila rigorosamente al contatto noto corrispondente (es. raw_name='Filippo Calzavara', company='Trellis', email='filippo@trellis.so')! NON creare duplicati fantasiosi!
+- Se l'utente cita una nuova persona (es. 'Gennaro' della startup 'Caio Cato', o 'Giorgio' amico), estraila con il suo nome reale e azienda/ruolo corretti.
+"""
+
         return f"""
 Sei un assistente esecutivo e personale avanzato per l'analisi di riunioni, note vocali, prompt testuali, promemoria, commissioni ed email.
 Il tuo compito è analizzare la registrazione o il testo fornito ed estrarre in modo rigoroso, fedele ed esaustivo tutte le informazioni e le azioni operative.
@@ -116,51 +129,62 @@ Tutte le date e gli orari citati (es. "domani alle 9", "domani sera dopo cena", 
 devono essere tassativamente calcolati rispetto a questo timestamp e convertiti in formato UTC ISO-8601 considerando il fuso orario {user_tz}.
 
 {identity_section}
+{contacts_block}
 {lang_section}
 
-REGOLA SPECIALE: OVERRIDE LINGUA PER SINGOLA AZIONE:
-Se l'utente specifica espressamente che una determinata email deve essere scritta in una lingua particolare (es. "L'email per mia mamma deve essere scritta in inglese" oppure "Write the follow-up in English"):
-L'oggetto (`subject`) e il corpo (`body_markdown`) di QUELLA SPECIFICA EMAIL DEVONO ESSERE SCRITTI RIGOROSAMENTE NELLA LINGUA RICHIESTA (es. in inglese, tipo: Subject: "Thinking of you", Body: "Dear Mom, I just wanted to tell you how much I love you..."), indipendentemente dalla lingua parlata nella registrazione o prompt!
+CONVENZIONI EMAIL NEL PARLATO E SEPARAZIONE BOZZE (CRITICO):
+- Se l'utente detta un'email dicendo 'chiocciola' o la trascrizione scrive 'chiocciola' (es. 'Giorgio.chiocciola@gmail.com' o 'giorgio chiocciola gmail punto com'), convertila SEMPRE nel simbolo '@' -> 'giorgio@gmail.com'!
+- Se l'utente menziona PIÙ EMAIL (es. 'un'email a me stesso' E 'un'email anche a Giorgio'), DEVI GENERARE AZIONI EMAIL_DRAFT SEPARATE E DISTINTE:
+  * Una bozza EMAIL_DRAFT per Giorgio: recipient_name='Giorgio', recipient_email='giorgio@gmail.com' (o vuota se non chiara), con il testo per Giorgio (es. ringraziamento per il prestito).
+  * Una bozza EMAIL_DRAFT o nota per l'utente stesso SE richiesta.
+- REGOLA D'ORO: NON ASSEGNARE MAI E PER NESSUN MOTIVO L'EMAIL PERSONALE DELL'UTENTE ('{user_email}') AD ALTRE PERSONE (come Giorgio, Mamma, colleghi)! Se non sai l'email di un destinatario, lascia `recipient_email=""` (stringa vuota).
 
 REGOLA ANTI-ALLUCINAZIONE NOMI E FONETICA:
-- NON confondere MAI parole comuni del parlato come "mezzogiorno", "mangiare", "treno", "arrivo", "riposare" per nomi propri di persone (NON inventare MAI "giorgo", "mario", ecc.)!
+- NON confondere MAI parole comuni del parlato come "mezzogiorno", "mangiare", "treno", "arrivo", "riposare" per nomi propri di persone!
 - Estrai come entità o destinatari ESCLUSIVAMENTE persone reali richieste dall'utente:
   * "email a me stesso" → destinatario '{effective_name}' (l'utente stesso), NON usare "Me stesso"!
   * "email a mia mamma" → destinatario "Mamma", email "" (stringa vuota se non fornita espressamente).
-- NON associare MAI l'email personale dell'utente ad altri contatti (es. NON metterla su Mamma o altri contatti!).
 
 CLASSIFICAZIONE DELLE AZIONI OPERATIVE (proposed_actions):
 Devi distinguere con estremo buon senso e precisione la natura di ciascuna richiesta:
 
-1. CALENDAR_EVENT (Solo per veri appuntamenti, riunioni o eventi con orario fissato):
-   - Genera CALENDAR_EVENT ESCLUSIVAMENTE per:
-     * Riunioni di lavoro, call o incontri con persone (es. "riunione con Mario alle 15").
-     * Appuntamenti formali o personali concordati (es. "appuntamento di domani", "appuntamento lunedì dopo le lezioni", "visita medica"). Se l'utente menziona un appuntamento dicendo che è ad esempio "dopo le lezioni" o "dopo essere tornato a casa in treno e aver mangiato/riposato", proponi comunque l'azione CALENDAR_EVENT stimando l'orario plausibile (es. 16:30 o pomeriggio) affinché l'utente possa visualizzarlo e confermarlo o regolarlo con un clic.
+1. CALENDAR_EVENT (Solo per veri appuntamenti, riunioni o call con orario concordato o flessibile):
+   - Genera CALENDAR_EVENT ESCLUSIVAMENTE per incontri, call o riunioni.
+   - GESTIONE FUSI ORARI E FLESSIBILITÀ (es. Tokyo / Università / sera):
+     * Se l'utente dice di dover fare una call con una persona all'estero (es. 'Lui è a Tokyo', 7-8 ore avanti) e di avere lezioni all'università di giorno, ed essere flessibile la sera più tardi:
+       Colloca la call in una fascia oraria serale libera e ragionevole (es. 20:30 o 21:00) che non si sovrapponga alle lezioni!
+       Imposta `is_flexible=True` nel CalendarPayload.
+     * Compila il campo `slot_reasoning` spiegando la logica adottata (es. 'Slot serale individuato per non sovrapporsi alle lezioni universitarie e consentire la compatibilità con il fuso orario di Tokyo').
    - REGOLA FERREA CONTRO FALSISIMI APPUNTAMENTI:
-     Faccende personali, compiti ordinari, commissioni, spesa e promemoria (es. "dare da bere alle piante", "fare la spesa", "comprare le sigarette", "lavare l'auto", "prendere il treno") NON SONO ASSOLUTAMENTE APPUNTAMENTI DI CALENDARIO anche se menzionano un giorno come "domani" o un orario! Non inventare MAI orari per tali compiti: queste attività DEVONO TASSATIVAMENTE ANDARE IN `TASK_TODO`!
+     Faccende personali, compiti ordinari, commissioni e promemoria (es. "dare da bere alle piante", "portare fuori la spazzatura", "pulire la casa", "sistemare la stanza", "dipingere i muri") NON SONO ASSOLUTAMENTE APPUNTAMENTI DI CALENDARIO! Vanno tassativamente in `TASK_TODO`!
 
 2. TASK_TODO (Tutte le cose da fare, commissioni personali e faccende):
    - Genera un'azione TASK_TODO con la lista `task_items` per tutte le cose da fare, to-do, faccende domestiche e commissioni:
      * "dare da bere alle piante" → TASK_TODO
-     * "fare la spesa" → TASK_TODO
-     * "prendere il treno" o "viaggio" → contesto o TASK_TODO
-   - Non mettere MAI le faccende in CALENDAR_EVENT!
+     * "portare fuori la spazzatura" → TASK_TODO
+     * "pulire la casa" → TASK_TODO
+     * "sistemare la stanza" → TASK_TODO
+     * "dipingere i muri dell'appartamento" → TASK_TODO
 
-3. EMAIL_DRAFT (Bozza di messaggio email richiesta):
-   - Genera SEMPRE un'azione EMAIL_DRAFT per ciascuna email esplicitamente richiesta dall'utente:
-     * `recipient_email`: l'email citata per quel destinatario. Se non fornita o se l'utente dice di lasciarla vuota, lascia stringa vuota "" (NON inventare domini e NON usare l'email personale dell'utente per altri destinatari!).
-     * `recipient_name`: il nome della persona (es. 'Mamma', '{effective_name}'). Se l'email è per se stesso, usa '{effective_name}'.
-     * `subject`: oggetto pertinente e caloroso (nella lingua richiesta per quell'email).
-     * `body_markdown`: testo caloroso, naturale e fedele alle istruzioni dell'utente (nella lingua richiesta per quell'email).
-     * IMPORTANTE: NON inserire MAI nel corpo email note di disponibilità slot, scuse per riunioni o date se l'email è un messaggio personale, affettivo o di appunti!
+3. EMAIL_DRAFT (Bozze di messaggio email):
+   - Genera azioni EMAIL_DRAFT separate per ciascun destinatario distinto.
+   - `recipient_email`: l'email corretta del destinatario (es. 'giorgio@gmail.com'). Se non fornita, lascia "" (MAI l'email personale dell'utente!).
+   - `recipient_name`: nome della persona (es. 'Giorgio', '{effective_name}').
+   - SPECIFICA ESPLICITA DELL'ORARIO:
+     Se l'email ha lo scopo di concordare, confermare o comunicare l'orario di un appuntamento/call (es. per Filippo o colleghi):
+     DEVI TASSATIVAMENTE INCLUDERE nel testo del messaggio (`body_markdown`) il giorno, la data e l'orario esatto stabilito nel corrispondente CALENDAR_EVENT (es. "martedì 28 ottobre alle ore 21:00").
+     NON usare mai frasi generiche senza orario come "ti confermo l'orario stabilito" senza specificare data e ora precise!
+   - ZERO-HALLUCINATION SU TEMI, PROGETTI E PREFERENZE (CRITICO):
+     Nelle email (`EMAIL_DRAFT`), scrivi SOLO E RIGOROSAMENTE ciò che l'utente ha esplicitamente richiesto di comunicare (es. comunicare l'orario della call, o raccontare una battuta ad Antonio).
+     È SEVERAMENTE VIETATO inventare argomenti aziendali, rilasci di versioni (es. 'rilascio Q1', 'release', 'roadmap'), contratti, discussioni passate o presunte preferenze orarie altrui (es. 'so che preferisci la mattina') NON pronunciate dall'utente!
+     Tutto ciò che scrivi deve essere fondato al 100% sulla realtà espressa dall'utente.
 
 4. KNOWLEDGE_NOTE (Second Brain):
    - Note e approfondimenti rilevanti da conservare nel tempo.
 
 5. ENTITÀ E RUOLI (entities):
-   - Estrai i contatti reali (es. 'Mamma', '{effective_name}'). Se l'utente dice "me stesso", l'entità deve avere raw_name="{effective_name}".
-   - Se per una persona viene citata un'email nel testo, compila il campo `email` dell'entità con quell'indirizzo.
-   - Per familiari o contatti personali, imposta `company="N/D"` e `role="Famiglia"` o `role="Personale"`. NON inventare ruoli aziendali ridicoli come "madre dell'utente" o "riceverà un'email".
+   - Estrai i contatti reali (es. 'Filippo Calzavara', 'Gennaro', 'Giorgio', '{effective_name}').
+   - DEDUPLICAZIONE RIGOROSA: La stessa persona non deve MAI comparire più di una volta nell'elenco `entities`! L'utente ('{effective_name}') deve comparire al massimo una volta.
 """
 
     async def extract_from_audio(
@@ -172,6 +196,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         user_profile_language: Optional[str] = None,
         user_name: Optional[str] = None,
         user_email: Optional[str] = None,
+        known_contacts_summary: Optional[List[str]] = None,
     ) -> SessionExtractionResult:
         """
         Analizza l'audio con Gemini e cascata automatica di declassazione in caso di sovraccarico (503).
@@ -180,7 +205,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         mime_type = self._detect_mime_type(filename)
         anchor_iso = anchor_utc.isoformat()
         system_instruction = self._build_system_instruction(
-            anchor_iso, user_tz, user_profile_language, user_name, user_email
+            anchor_iso, user_tz, user_profile_language, user_name, user_email, known_contacts_summary
         )
 
         config = types.GenerateContentConfig(
@@ -204,7 +229,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
             f"{lang_cue} "
             f"Genera CALENDAR_EVENT solo per veri incontri/riunioni con orario concordato. "
             f"Faccende personali e commissioni (es. 'dare da bere alle piante', 'fare la spesa') devono andare in TASK_TODO anche se citano 'domani'. "
-            f"Genera EMAIL_DRAFT lasciando vuota l'email se non esplicitata, senza note inventate di calendario per messaggi personali."
+            f"Genera EMAIL_DRAFT lasciando vuota l'email se non esplicitata; per email riguardanti incontri o call specifica sempre chiaramente giorno e orario stabiliti nel corpo del messaggio."
         )
 
         # Preparazione contenuti audio
@@ -256,6 +281,19 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         # Validazione Pydantic
         result = SessionExtractionResult.model_validate_json(response_text)
 
+        # Pulizia email parlate e normalizzazione di sicurezza
+        for action in result.proposed_actions:
+            if action.action_type == ActionType.EMAIL_DRAFT and action.email_data:
+                action.email_data.recipient_email = clean_spoken_email(action.email_data.recipient_email)
+                recip_lower = (action.email_data.recipient_name or "").lower().strip()
+                is_user_recip = any(k in recip_lower for k in ("davide", "me", "stesso", "myself", "io"))
+                if not is_user_recip and user_email and action.email_data.recipient_email.lower() == user_email.lower():
+                    action.email_data.recipient_email = ""
+
+        for entity in result.entities:
+            if getattr(entity, "email", None):
+                entity.email = clean_spoken_email(entity.email)
+
         # Garantisce ID univoci e chiavi di idempotenza su ogni azione
         for action in result.proposed_actions:
             if not action.id:
@@ -277,6 +315,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         user_profile_language: Optional[str] = None,
         user_name: Optional[str] = None,
         user_email: Optional[str] = None,
+        known_contacts_summary: Optional[List[str]] = None,
     ) -> SessionExtractionResult:
         """
         Analizza un testo o prompt descrittivo della giornata con Gemini e cascata automatica.
@@ -284,7 +323,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         """
         anchor_iso = anchor_utc.isoformat()
         system_instruction = self._build_system_instruction(
-            anchor_iso, user_tz, user_profile_language, user_name, user_email
+            anchor_iso, user_tz, user_profile_language, user_name, user_email, known_contacts_summary
         )
 
         config = types.GenerateContentConfig(
@@ -304,7 +343,7 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
             f"{lang_cue} "
             f"Genera CALENDAR_EVENT solo per veri incontri/riunioni con orario concordato. "
             f"Faccende personali e commissioni (es. 'dare da bere alle piante', 'fare la spesa') devono andare in TASK_TODO anche se citano 'domani'. "
-            f"Genera EMAIL_DRAFT lasciando vuota l'email se non esplicitata, senza note inventate di calendario per messaggi personali."
+            f"Genera EMAIL_DRAFT lasciando vuota l'email se non esplicitata; per email riguardanti incontri o call specifica sempre chiaramente giorno e orario stabiliti nel corpo del messaggio."
         )
 
         contents: Any = [
@@ -340,6 +379,19 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         # Validazione Pydantic
         result = SessionExtractionResult.model_validate_json(response_text)
 
+        # Pulizia email parlate e normalizzazione di sicurezza
+        for action in result.proposed_actions:
+            if action.action_type == ActionType.EMAIL_DRAFT and action.email_data:
+                action.email_data.recipient_email = clean_spoken_email(action.email_data.recipient_email)
+                recip_lower = (action.email_data.recipient_name or "").lower().strip()
+                is_user_recip = any(k in recip_lower for k in ("davide", "me", "stesso", "myself", "io"))
+                if not is_user_recip and user_email and action.email_data.recipient_email.lower() == user_email.lower():
+                    action.email_data.recipient_email = ""
+
+        for entity in result.entities:
+            if getattr(entity, "email", None):
+                entity.email = clean_spoken_email(entity.email)
+
         # Garantisce ID univoci e chiavi di idempotenza su ogni azione
         for action in result.proposed_actions:
             if not action.id:
@@ -366,41 +418,42 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         """
         pref_context = ""
         if history and history.key_preferences:
-            pref_context = "Preferenze e abitudini note del destinatario:\n" + "\n".join([f"- {p}" for p in history.key_preferences])
+            pref_context = "Preferenze verificate del contatto (attenersi ESCLUSIVAMENTE a queste, NON inventarne altre):\n" + "\n".join([f"- {p}" for p in history.key_preferences])
+        else:
+            pref_context = "Nessuna preferenza oraria registrata per questo contatto. NON citare alcuna preferenza (NON dire che preferisce la mattina o la sera)."
 
         system_instruction = f"""
-Sei un assistente esecutivo esperto nella stesura di email di lavoro e follow-up.
-Il tuo compito è riaggiornare la bozza email per allinearla a un nuovo orario concordato o proposto.
-Fuso orario dell'utente: {user_tz}.
+Sei un assistente esecutivo per la stesura e l'aggiornamento di email.
+Il tuo UNICO compito è aggiornare la proposta oraria all'interno della bozza email esistente, allineandola al nuovo orario: "{new_slot_str}".
 
-REGOLE DI SCRITTURA:
-1. Adatta la formula di cortesia e le motivazioni/scuse in modo fluido e professionale (es. "Purtroppo a quell'orario ho una sovrapposizione in agenda, ti andrebbe bene invece...").
-2. Inserisci chiaramente la nuova proposta oraria: {new_slot_str}.
-3. Preserva tutti gli appunti, le note e le richieste importanti già presenti nella bozza originale.
-4. Tieni conto delle preferenze del contatto se fornite.
-5. Mantieni destinatario ed email inalterati.
+VINCOLI TASSATIVI ZERO-HALLUCINATION (TOLLERANZA ZERO PER FABBRICAZIONI):
+1. ZERO INVENZIONI DI PROGETTI O ARGOMENTI: È SEVERAMENTE VIETATO introdurre progetti, rilasci software (es. 'rilascio Q1', 'release', 'roadmap'), contratti, accordi o argomenti di discussione NON esplicitamente presenti nella bozza originale.
+2. ZERO INVENZIONI DI PREFERENZE ORARIE: È SEVERAMENTE VIETATO inventare preferenze del destinatario (es. "so che preferisci la fascia mattutina", "so che preferisci la mattina"). Se non fornite espressamente nelle preferenze note, NON citare alcuna preferenza.
+3. ZERO INVENZIONI DI SCUSE FITTIZIE: Non inventare false scuse, sovrapposizioni in agenda immaginarie o imprevisti non richiesti. Proponi o conferma il nuovo orario in modo diretto, cordiale e professionale (es. "Ti andrebbe bene invece {new_slot_str}?", o "Ti confermo il nuovo orario per la nostra call: {new_slot_str}").
+4. INTEGRITÀ E SEMPLICITÀ DEL TESTO: Mantieni inalterati il saluto, il tono, il corpo principale e la firma della bozza originale. Sostituisci unicamente il riferimento al vecchio orario con il nuovo orario: "{new_slot_str}".
+5. DESTINATARIO ED EMAIL: Mantieni inalterati `recipient_name` e `recipient_email`.
 """
 
         prompt = f"""
 BOZZA ORIGINALE:
 Destinatario: {original_payload.recipient_name} ({original_payload.recipient_email})
 Oggetto: {original_payload.subject}
-Corpo:
+Corpo attuale:
 {original_payload.body_markdown}
 
-NUOVO ORARIO CONCORDATO/PROPOSTO:
+NUOVO ORARIO PROPOSTO/CONCORDATO:
 {new_slot_str}
 
 {pref_context}
 
-Genera il nuovo EmailPayload aggiornato con oggetto pertinente e corpo modificato.
+Genera il nuovo EmailPayload aggiornato limitandoti a sostituire la data/ora con "{new_slot_str}", senza aggiungere argomenti, scuse o preferenze inventate.
 """
 
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             response_mime_type="application/json",
             response_schema=EmailPayload,
-            temperature=0.2,
+            temperature=0.0,
         )
 
         client = genai.Client(api_key=self.api_key)
@@ -456,6 +509,7 @@ REGOLE TASSATIVE DI RIADATTAMENTO:
    - Se il destinatario cambia genere (maschile <-> femminile), adatta tutti gli articoli, pronomi e participi passati (es. "benvenuto" <-> "benvenuta", "pronto" <-> "pronta", "caro" <-> "cara").
 3. Contenuti e dettagli:
    - Mantieni INVARIATI tutti i contenuti operativi, i task, le decisioni, gli allegati o i riferimenti citati nel testo originale.
+   - ZERO-HALLUCINATION: Non aggiungere argomenti aziendali, rilasci o preferenze inventate non presenti nel testo originale.
 4. Campi tecnici:
    - `recipient_email`: MANTIENI TASSATIVAMENTE l'email originale "{original_payload.recipient_email}". NON modificarla e non inventare indirizzi.
    - `recipient_name`: imposta esattamente "{clean_name}".
@@ -479,7 +533,7 @@ Genera il nuovo EmailPayload aggiornato con concordanza perfetta di genere, form
             system_instruction=system_instruction,
             response_mime_type="application/json",
             response_schema=EmailPayload,
-            temperature=0.2,
+            temperature=0.0,
         )
 
         client = genai.Client(api_key=self.api_key)

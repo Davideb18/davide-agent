@@ -65,6 +65,14 @@ class CalendarPayload(BaseModel):
     description: str = ""
     location: Optional[str] = None
     alternative_slots_utc: List[datetime] = Field(default_factory=list) # Slot alternativi per il meeting 
+    slot_reasoning: Optional[str] = Field(
+        default=None,
+        description="Spiegazione sintetica del perché è stato scelto questo orario o giorno, citando eventuali vincoli menzionati (es. rientro dall'università, tempo libero prima di palestra o cena)."
+    ) 
+    is_flexible: bool = Field(
+        default=False,
+        description="True se l'orario non è fissato in modo rigido ma è indicativo o flessibile (es. 'intorno a martedì', 'la sera più tardi', 'dopo le lezioni')."
+    ) 
 
 
 

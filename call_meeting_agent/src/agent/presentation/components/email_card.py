@@ -8,6 +8,7 @@ from typing import Optional, List
 import streamlit as st
 from src.agent.domain.enums import ActionStatus
 from src.agent.domain.models import ProposedAction, Contact
+from src.agent.domain.datetime_utils import clean_spoken_email, is_self_mention
 from src.agent.presentation.state import run_async, is_email_live
 
 
@@ -77,10 +78,11 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
     last_adapted_key = f"last_adapted_name_{mail_action.id}"
 
     # Inizializza session state se assente
+    # Inizializza session state se assente
     if name_key not in st.session_state:
         st.session_state[name_key] = data.recipient_name or ""
     if email_key not in st.session_state:
-        st.session_state[email_key] = data.recipient_email or ""
+        st.session_state[email_key] = clean_spoken_email(data.recipient_email or "")
     if last_adapted_key not in st.session_state:
         st.session_state[last_adapted_key] = (data.recipient_name or "").strip()
 
@@ -89,7 +91,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
     user_profile = st.session_state.get("user_profile")
     user_c = next((c for c in saved_contacts if "utente" in [t.lower() for t in c.tags] or "personale" in [t.lower() for t in c.tags]), None)
 
-    self_keywords = {"me", "me stesso", "myself", "io", "stesso"}
+    self_keywords = {"me", "me stesso", "myself", "io", "stesso", "me stessa"}
     if user_profile:
         if user_profile.first_name: self_keywords.add(user_profile.first_name.lower().strip())
         if user_profile.last_name: self_keywords.add(user_profile.last_name.lower().strip())
@@ -100,15 +102,29 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
         if user_c.last_name: self_keywords.add(user_c.last_name.lower().strip())
         for a in user_c.aliases: self_keywords.add(a.lower().strip())
 
-    if any(curr_n_raw.lower() == k for k in self_keywords):
+    user_emails = set()
+    if user_profile and user_profile.email:
+        user_emails.add(user_profile.email.lower().strip())
+    if user_c and user_c.email:
+        user_emails.add(user_c.email.lower().strip())
+
+    is_self = is_self_mention(curr_n_raw, self_keywords)
+
+    if is_self:
         resolved_name = user_c.first_name if user_c else (user_profile.first_name if user_profile else "")
         resolved_email = user_c.email if user_c and user_c.email else (user_profile.email if user_profile else "")
-        if resolved_name and curr_n_raw.lower() in ("me", "me stesso", "myself", "io"):
+        if resolved_name and curr_n_raw.lower() in ("me", "me stesso", "myself", "io", "me stessa"):
             st.session_state[name_key] = resolved_name
             data.recipient_name = resolved_name
         if resolved_email and not (st.session_state.get(email_key) or "").strip():
             st.session_state[email_key] = resolved_email
             data.recipient_email = resolved_email
+    else:
+        # REGOLA ZERO-LEAKAGE: Se non è l'utente stesso, la sua email personale non deve mai essere usata
+        curr_e = (st.session_state.get(email_key) or "").strip().lower()
+        if curr_e in user_emails:
+            st.session_state[email_key] = ""
+            data.recipient_email = ""
 
     # Aggiorna il nome nel payload senza mai cancellare l'indirizzo email inserito
     current_name = st.session_state[name_key].strip()
@@ -131,7 +147,6 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
         # 2. Se ancora vuoto, cerca tra le entità della sessione o nel prompt
         if not st.session_state[email_key].strip():
             session_obj = st.session_state.get("current_session")
-            is_self = any(k in clean_target for k in self_keywords)
             if session_obj and getattr(session_obj, "entities", None):
                 for ent in session_obj.entities:
                     if getattr(ent, "email", None) and ent.email.strip():
@@ -139,10 +154,14 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                         if (
                             ent_lower in clean_target
                             or clean_target in ent_lower
-                            or (is_self and any(k in ent_lower for k in self_keywords))
+                            or (is_self and is_self_mention(ent_lower, self_keywords))
                         ):
-                            data.recipient_email = ent.email.strip()
-                            st.session_state[email_key] = ent.email.strip()
+                            # Non leccare email dell'utente a terzi
+                            if not is_self and ent.email.strip().lower() in user_emails:
+                                continue
+                            cleaned = clean_spoken_email(ent.email.strip())
+                            data.recipient_email = cleaned
+                            st.session_state[email_key] = cleaned
                             break
 
             if not st.session_state[email_key].strip() and is_self and session_obj:
@@ -286,6 +305,12 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                     c_fn = (c.first_name or "").strip().lower()
                     c_full = f"{c.first_name} {c.last_name}".strip().lower()
                     c_alias = [a.lower().strip() for a in (c.aliases or [])]
+                    c_is_user = ("utente" in [t.lower() for t in c.tags] or "personale" in [t.lower() for t in c.tags])
+
+                    # Se il destinatario attuale non è l'utente, non pre-selezionare l'utente dal dropdown
+                    if not is_self and c_is_user:
+                        continue
+
                     if (check_mail and c_mail == check_mail) or (check_name and (check_name in (c_fn, c_full) or check_name in c_alias)):
                         match_idx = i_c + 1
                         break
@@ -316,7 +341,6 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 email_placeholder = "e.g. name@email.com (optional)" if is_en else "es. nome@email.com (facoltativa)"
                 new_email = st.text_input(
                     email_input_lbl,
-                    value=st.session_state[email_key],
                     key=email_key,
                     placeholder=email_placeholder,
                     disabled=is_exec,
@@ -328,7 +352,6 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 name_placeholder = "e.g. Mom, Marco..." if is_en else "es. Mamma, Marco..."
                 new_name = st.text_input(
                     name_input_lbl,
-                    value=st.session_state[name_key],
                     key=name_key,
                     placeholder=name_placeholder,
                     disabled=is_exec,
@@ -383,21 +406,24 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 st.rerun()
 
             subj_lbl = "Subject:" if is_en else "Oggetto:"
-
+            subj_key = f"subj_{mail_action.id}_{ver}"
+            if subj_key not in st.session_state:
+                st.session_state[subj_key] = data.subject or ""
             new_subj = st.text_input(
                 subj_lbl,
-                value=data.subject,
-                key=f"subj_{mail_action.id}_{ver}",
+                key=subj_key,
                 disabled=is_exec,
             )
             data.subject = new_subj
 
             body_lbl = "Message body:" if is_en else "Testo del messaggio:"
+            body_key = f"body_{mail_action.id}_{ver}"
+            if body_key not in st.session_state:
+                st.session_state[body_key] = data.body_markdown or ""
             new_body = st.text_area(
                 body_lbl,
-                value=data.body_markdown,
                 height=155,
-                key=f"body_{mail_action.id}_{ver}",
+                key=body_key,
                 disabled=is_exec,
             )
             data.body_markdown = new_body

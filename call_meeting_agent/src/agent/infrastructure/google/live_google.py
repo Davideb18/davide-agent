@@ -1,4 +1,5 @@
 import os
+import asyncio
 import base64
 import threading
 from email.mime.text import MIMEText
@@ -141,6 +142,17 @@ class LiveCalendarService:
                 except Exception:
                     e_dt = s_dt + timedelta(minutes=30)
 
+                # Gestione eventi "all-day" o formati privi di timezone (naive datetime)
+                if s_dt.tzinfo is None:
+                    s_dt = s_dt.replace(tzinfo=timezone.utc)
+                else:
+                    s_dt = s_dt.astimezone(timezone.utc)
+
+                if e_dt.tzinfo is None:
+                    e_dt = e_dt.replace(tzinfo=timezone.utc)
+                else:
+                    e_dt = e_dt.astimezone(timezone.utc)
+
                 att_emails = [a.get("email", "") for a in item.get("attendees", []) if a.get("email")]
                 summary = item.get("summary") or "Impegno senza titolo"
                 location = item.get("location")
@@ -183,7 +195,7 @@ class LiveCalendarService:
     async def create_event(self, payload: CalendarPayload, idempotency_key: str) -> str:
         note_suffix = chr(10) + chr(10) + f"[Schedulato da Executive AI Agent | Key: {idempotency_key}]"
         desc = payload.description + note_suffix
-        event_body = {
+        event_body: Dict[str, Any] = {
             "summary": payload.title,
             "description": desc,
             "start": {
@@ -210,7 +222,7 @@ class LiveCalendarService:
             }
             conf_version = 1
 
-        insert_kwargs = {"calendarId": "primary", "body": event_body}
+        insert_kwargs: Dict[str, Any] = {"calendarId": "primary", "body": event_body}
         if conf_version > 0:
             insert_kwargs["conferenceDataVersion"] = conf_version
 
@@ -281,7 +293,10 @@ class MacMailService:
             save newMsg
         end tell
         '''
-        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+        def _run_mail():
+            return subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+
+        res = await asyncio.to_thread(_run_mail)
         if res.returncode == 0:
             return f"mac_mail_{idempotency_key[:10]}"
         raise RuntimeError(res.stderr or "Errore creazione bozza Apple Mail")

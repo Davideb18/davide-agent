@@ -1,7 +1,4 @@
-"""
-tasks_card.py — Card To-Do List e Promemoria macOS.
-Design System: Apple Executive.
-"""
+from datetime import datetime
 import html
 from typing import Optional
 import streamlit as st
@@ -58,16 +55,18 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
         col_edit, col_actions = st.columns([2, 1.2], gap="large")
 
         with col_edit:
-            txt_items = "\n".join(data.task_items or [])
+            tasks_key = f"tasks_input_{task_action.id}"
+            if tasks_key not in st.session_state:
+                st.session_state[tasks_key] = "\n".join(data.task_items or [])
             edited_tasks = st.text_area(
                 "Compiti da eseguire (uno per riga):",
-                value=txt_items,
+                key=tasks_key,
                 height=140,
-                key=f"tasks_input_{task_action.id}",
                 disabled=False,
                 help="Modifica o aggiungi compiti prima di salvarli nel tuo progetto o in Promemoria.",
             )
-            data.task_items = [t.strip() for t in edited_tasks.split("\n") if t.strip()]
+            current_raw = st.session_state.get(tasks_key, edited_tasks)
+            data.task_items = [t.strip() for t in current_raw.split("\n") if t.strip()]
 
         with col_actions:
             st.markdown(
@@ -75,56 +74,177 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
                 unsafe_allow_html=True,
             )
 
-            obs_synced = (task_action.status == ActionStatus.EXECUTED)
+            is_exec = (task_action.status == ActionStatus.EXECUTED)
+            obs_synced = is_exec
+
+            tasks_sync = st.session_state.get(f"tasks_last_sync_{task_action.id}")
+            time_tag = f" • Ore {tasks_sync['time']} ({tasks_sync['count']} compiti)" if tasks_sync else ""
+
             if not obs_synced:
                 if st.button("📓 Salva in Second Brain (Tasks.md)", key=f"btn_save_obs_tasks_{task_action.id}", type="primary", use_container_width=True):
-                    latest_raw = st.session_state.get(f"tasks_input_{task_action.id}", edited_tasks)
+                    latest_raw = st.session_state.get(tasks_key, edited_tasks)
                     data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
-                    with st.spinner("Salvataggio in Tasks.md..."):
-                        ok, msg = run_async(committer.execute_action(task_action, user_modified_payload={"task_items": data.task_items, "target_project": data.target_project}))
-                    if ok:
-                        st.toast(msg, icon="📋")
-                        st.rerun()
+                    if not data.task_items:
+                        st.warning("Nessun compito inserito nella lista.")
                     else:
-                        st.error(f"Errore Second Brain: {msg}")
+                        with st.spinner("Salvataggio in Tasks.md..."):
+                            try:
+                                ok, msg = run_async(committer.execute_action(task_action, user_modified_payload={"task_items": data.task_items, "target_project": data.target_project}))
+                                if ok:
+                                    st.session_state[f"tasks_last_sync_{task_action.id}"] = {
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "count": len(data.task_items),
+                                    }
+                                    session = st.session_state.get("current_session")
+                                    if session and hasattr(st.session_state, "repo") and st.session_state.repo:
+                                        try:
+                                            run_async(st.session_state.repo.save_session(session))
+                                        except Exception:
+                                            pass
+                                    st.toast(f"✅ {len(data.task_items)} compiti salvati in Tasks.md!", icon="📋")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Errore Second Brain: {msg}")
+                            except Exception as e:
+                                st.error(f"Errore durante il salvataggio in Tasks.md: {e}")
             else:
                 st.markdown(
-                    '<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px; margin-bottom:8px;"><span class="aria-pill aria-pill-green">✅ Salvato in Tasks.md</span></div>',
+                    f'<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px 12px; margin-bottom:8px;">'
+                    f'  <div style="font-weight:700; color:#15803D; font-size:12px; display:flex; align-items:center; gap:6px;">'
+                    f'    <span>✅</span> <span>Sincronizzato con Tasks.md</span>'
+                    f'  </div>'
+                    f'  <div style="font-size:11px; color:#166534; margin-top:2px; font-weight:500;">{time_tag or "Archiviato nel tuo Second Brain locale"}</div>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
+                if st.button("📓 Salva / Aggiorna in Second Brain (Tasks.md)", key=f"btn_update_obs_tasks_{task_action.id}", use_container_width=True):
+                    latest_raw = st.session_state.get(tasks_key, edited_tasks)
+                    data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
+                    if not data.task_items:
+                        st.warning("Nessun compito inserito nella lista.")
+                    else:
+                        with st.spinner("Aggiornamento in Tasks.md..."):
+                            try:
+                                ok, msg = run_async(committer.execute_action(task_action, user_modified_payload={"task_items": data.task_items, "target_project": data.target_project}))
+                                if ok:
+                                    st.session_state[f"tasks_last_sync_{task_action.id}"] = {
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "count": len(data.task_items),
+                                    }
+                                    session = st.session_state.get("current_session")
+                                    if session and hasattr(st.session_state, "repo") and st.session_state.repo:
+                                        try:
+                                            run_async(st.session_state.repo.save_session(session))
+                                        except Exception:
+                                            pass
+                                    st.toast(f"✅ Tasks.md aggiornato ({len(data.task_items)} compiti)!", icon="📋")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Errore Second Brain: {msg}")
+                            except Exception as e:
+                                st.error(f"Errore durante l'aggiornamento in Tasks.md: {e}")
 
             # Esporta su Apple Reminders (Promemoria macOS) — Esecuzione non-bloccante a latenza zero
             rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
+            rem_sync = st.session_state.get(f"reminders_last_sync_{task_action.id}")
+            rem_time_tag = f" • Ore {rem_sync['time']} ({rem_sync['count']} compiti)" if rem_sync else ""
+
             if not rem_synced:
                 if st.button("🍎 Esporta su Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", use_container_width=True):
                     import uuid
                     import hashlib
 
-                    latest_raw = st.session_state.get(f"tasks_input_{task_action.id}", edited_tasks)
+                    latest_raw = st.session_state.get(tasks_key, edited_tasks)
                     data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
-
-                    raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
-                    rem_action = ProposedAction(
-                        id=f"act_rem_{uuid.uuid4().hex[:8]}",
-                        session_id=task_action.session_id,
-                        action_type=ActionType.TASK_EXPORT_REMINDERS,
-                        idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
-                        task_data=TaskPayload(task_items=data.task_items),
-                    )
-
-                    with st.spinner("Sincronizzazione in corso con Promemoria macOS..."):
-                        ok, msg = run_async(committer.execute_action(rem_action))
-                    if ok:
-                        st.session_state[f"reminders_synced_{task_action.id}"] = True
-                        st.toast(msg, icon="🍎")
-                        st.rerun()
+                    if not data.task_items:
+                        st.warning("Nessun compito inserito da esportare.")
                     else:
-                        st.error(f"Errore Promemoria: {msg}")
+                        raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
+                        rem_action = ProposedAction(
+                            id=f"act_rem_{uuid.uuid4().hex[:8]}",
+                            session_id=task_action.session_id,
+                            action_type=ActionType.TASK_EXPORT_REMINDERS,
+                            idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
+                            task_data=TaskPayload(task_items=data.task_items),
+                        )
+
+                        session = st.session_state.get("current_session")
+                        if session and not any(a.id == rem_action.id for a in session.proposed_actions):
+                            session.proposed_actions.append(rem_action)
+
+                        with st.spinner("Sincronizzazione in corso con Promemoria macOS..."):
+                            try:
+                                ok, msg = run_async(committer.execute_action(rem_action))
+                                if ok:
+                                    st.session_state[f"reminders_synced_{task_action.id}"] = True
+                                    st.session_state[f"reminders_last_sync_{task_action.id}"] = {
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "count": len(data.task_items),
+                                    }
+                                    if session and hasattr(st.session_state, "repo") and st.session_state.repo:
+                                        try:
+                                            run_async(st.session_state.repo.save_session(session))
+                                        except Exception:
+                                            pass
+                                    st.toast(f"🍎 {msg}", icon="🍎")
+                                    st.rerun()
+                                else:
+                                    st.warning(f"⚠️ {msg}")
+                            except Exception as e:
+                                st.error(f"Errore durante l'esportazione su Promemoria: {e}")
             else:
+                sub_label = rem_time_tag or "Presenti nell'app Promemoria"
                 st.markdown(
-                    '<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px;"><span class="aria-pill aria-pill-green">✅ Sincronizzato con Promemoria macOS</span></div>',
+                    f'<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px 12px; margin-bottom:8px;">'
+                    f'  <div style="font-weight:700; color:#15803D; font-size:12px; display:flex; align-items:center; gap:6px;">'
+                    f'    <span>🍎</span> <span>Sincronizzato con Promemoria macOS</span>'
+                    f'  </div>'
+                    f'  <div style="font-size:11px; color:#166534; margin-top:2px; font-weight:500;">{sub_label}</div>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
+                if st.button("🍎 Salva / Aggiorna su Promemoria macOS", key=f"btn_resave_reminders_{task_action.id}", use_container_width=True):
+                    import uuid
+                    import hashlib
+
+                    latest_raw = st.session_state.get(tasks_key, edited_tasks)
+                    data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
+                    if not data.task_items:
+                        st.warning("Nessun compito inserito da aggiornare.")
+                    else:
+                        raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
+                        rem_action = ProposedAction(
+                            id=f"act_rem_{uuid.uuid4().hex[:8]}",
+                            session_id=task_action.session_id,
+                            action_type=ActionType.TASK_EXPORT_REMINDERS,
+                            idempotency_key=f"idemp_rem_{hashlib.sha256(raw_sig.encode()).hexdigest()[:12]}",
+                            task_data=TaskPayload(task_items=data.task_items),
+                        )
+
+                        session = st.session_state.get("current_session")
+                        if session and not any(a.id == rem_action.id for a in session.proposed_actions):
+                            session.proposed_actions.append(rem_action)
+
+                        with st.spinner("Aggiornamento su Promemoria macOS in corso..."):
+                            try:
+                                ok, msg = run_async(committer.execute_action(rem_action))
+                                if ok:
+                                    st.session_state[f"reminders_synced_{task_action.id}"] = True
+                                    st.session_state[f"reminders_last_sync_{task_action.id}"] = {
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "count": len(data.task_items),
+                                    }
+                                    if session and hasattr(st.session_state, "repo") and st.session_state.repo:
+                                        try:
+                                            run_async(st.session_state.repo.save_session(session))
+                                        except Exception:
+                                            pass
+                                    st.toast(f"🍎 {msg}", icon="🍎")
+                                    st.rerun()
+                                else:
+                                    st.warning(f"⚠️ {msg}")
+                            except Exception as e:
+                                st.error(f"Errore durante l'aggiornamento su Promemoria: {e}")
 
             # Bottone Scarta
             if not is_exec and not obs_synced:

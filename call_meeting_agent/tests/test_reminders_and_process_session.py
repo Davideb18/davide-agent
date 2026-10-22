@@ -269,3 +269,172 @@ async def test_email_self_resolution_matches_user_contact(test_repo, tmp_path):
     assert mail_act.email_data.recipient_email == "bernodavide8@gmail.com"
     assert "Me stesso" not in mail_act.email_data.body_markdown
     assert "Ciao Davide" in mail_act.email_data.body_markdown
+
+
+def test_italian_names_ending_in_io_not_mistaken_for_self():
+    """Verifica che nomi italiani che terminano in 'io' come Antonio o Fabrizio non siano scambiati per 'io' (l'utente)."""
+    from src.agent.domain.datetime_utils import is_self_mention
+
+    self_kws = {"me", "stesso", "io", "myself", "davide", "berno"}
+
+    assert is_self_mention("Antonio", self_kws) is False
+    assert is_self_mention("Fabrizio", self_kws) is False
+    assert is_self_mention("Claudio", self_kws) is False
+    assert is_self_mention("Valerio", self_kws) is False
+    assert is_self_mention("Io", self_kws) is True
+    assert is_self_mention("Me", self_kws) is True
+    assert is_self_mention("Davide", self_kws) is True
+
+
+@pytest.mark.asyncio
+async def test_calendar_and_email_linking_injects_scheduled_slot(test_repo, tmp_path):
+    """Verifica che una bozza email per una call (es. con Filippo) riceva il linked_calendar_action_id e l'orario effettivo."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    vault_dir = tmp_path / "vault_link"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+
+    slot_utc = datetime(2026, 10, 27, 19, 0, tzinfo=timezone.utc)  # ore 21:00 Europe/Rome
+    mock_session = SessionExtractionResult(
+        session_id="ses_filippo_001",
+        summary="Call con Filippo",
+        is_actionable=True,
+        primary_intent=IntentCategory.BUSINESS_MEETING,
+        detected_language="it",
+        raw_transcript="call con Filippo martedì sera",
+        entities=[
+            ExtractedEntity(raw_name="Filippo", entity_type="PERSON"),
+        ],
+        proposed_actions=[
+            ProposedAction(
+                id="act_cal_filippo",
+                session_id="ses_filippo_001",
+                action_type=ActionType.CALENDAR_EVENT,
+                status=ActionStatus.PROPOSED,
+                calendar_data=CalendarPayload(
+                    title="Call con Filippo (Trellis)",
+                    start_utc=slot_utc,
+                    end_utc=slot_utc + timedelta(minutes=45),
+                    attendees=["filippo@trellis.so"],
+                ),
+            ),
+            ProposedAction(
+                id="act_email_filippo",
+                session_id="ses_filippo_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Filippo",
+                    recipient_email="filippo@trellis.so",
+                    subject="Call martedì sera",
+                    body_markdown="Ciao Filippo,\nti confermo l'orario stabilito per la nostra call di martedì sera. A presto!",
+                ),
+            ),
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="call con Filippo", anchor_utc=datetime.now(timezone.utc))
+
+    email_act = next(a for a in res.proposed_actions if a.action_type == ActionType.EMAIL_DRAFT)
+    assert email_act.email_data.linked_calendar_action_id == "act_cal_filippo"
+    # L'orario (20:00 UTC+1 o data formattata Mar 27 Ott) deve essere presente nel corpo dell'email
+    assert "20:00" in email_act.email_data.body_markdown or "Mar 27 Ott" in email_act.email_data.body_markdown
+
+
+@pytest.mark.asyncio
+async def test_multiple_drafts_calendar_isolation(test_repo, tmp_path):
+    """Verifica che in presenza di due email distinte (Filippo per call, Antonio per battuta),
+    solo Filippo venga collegato all'evento Calendar e Antonio resti disaccoppiato."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    vault_dir = tmp_path / "vault"
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+    slot_utc = datetime(2026, 10, 27, 19, 0, tzinfo=timezone.utc)
+
+    mock_session = SessionExtractionResult(
+        session_id="ses_multi_email_001",
+        summary="Call Filippo e battuta Antonio",
+        is_actionable=True,
+        primary_intent=IntentCategory.BUSINESS_MEETING,
+        detected_language="it",
+        raw_transcript="call Filippo e email ad Antonio per una battuta",
+        entities=[],
+        proposed_actions=[
+            ProposedAction(
+                id="act_cal_filippo_multi",
+                session_id="ses_multi_email_001",
+                action_type=ActionType.CALENDAR_EVENT,
+                status=ActionStatus.PROPOSED,
+                calendar_data=CalendarPayload(
+                    title="Call con Filippo",
+                    start_utc=slot_utc,
+                    end_utc=slot_utc + timedelta(minutes=45),
+                    attendees=["filippo@trellis.so"],
+                ),
+            ),
+            ProposedAction(
+                id="act_email_filippo_multi",
+                session_id="ses_multi_email_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Filippo",
+                    recipient_email="filippo@trellis.so",
+                    subject="Call martedì",
+                    body_markdown="Ciao Filippo, confermo la call di martedì.",
+                ),
+            ),
+            ProposedAction(
+                id="act_email_antonio_multi",
+                session_id="ses_multi_email_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Antonio",
+                    recipient_email="",
+                    subject="Una battuta per te",
+                    body_markdown="Ciao Antonio, volevo raccontarti una battuta divertente!",
+                ),
+            ),
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="test", anchor_utc=datetime.now(timezone.utc))
+
+    filippo_email = next(a for a in res.proposed_actions if a.id == "act_email_filippo_multi")
+    antonio_email = next(a for a in res.proposed_actions if a.id == "act_email_antonio_multi")
+
+    # Filippo è collegato alla call
+    assert filippo_email.email_data.linked_calendar_action_id == "act_cal_filippo_multi"
+    # Antonio NON deve assolutamente essere collegato alla call
+    assert antonio_email.email_data.linked_calendar_action_id is None
+    # L'email di Antonio non deve avere orari iniettati né email personale forzata
+    assert "20:00" not in antonio_email.email_data.body_markdown
+    assert antonio_email.email_data.recipient_email == ""
+
+

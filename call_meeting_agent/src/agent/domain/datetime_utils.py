@@ -2,8 +2,9 @@
 datetime_utils.py — Funzioni pure e immutabili per la gestione di date, orari e fusi orari.
 Disaccoppiato da locale di sistema (zero 'locale.setlocale()') per totale thread-safety in ambienti concorrenti.
 """
+import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Iterable
 from zoneinfo import ZoneInfo
 
 # ── DIZIONARI COSTANTI IMMUTABILI (ITALIANO) ──────────────────────────────────
@@ -41,10 +42,10 @@ MONTHS_FULL_EN: List[str] = [
 
 def resolve_timezone(tz_identifier: Optional[str] = None) -> ZoneInfo:
     """Restituisce l'oggetto ZoneInfo in modo sicuro con fallback deterministico su Europe/Rome."""
-    if not tz_identifier or not str(tz_identifier).strip():
+    if not tz_identifier or not tz_identifier.strip():
         return ZoneInfo("Europe/Rome")
     try:
-        return ZoneInfo(str(tz_identifier).strip())
+        return ZoneInfo(tz_identifier.strip())
     except Exception:
         return ZoneInfo("Europe/Rome")
 
@@ -61,7 +62,7 @@ def is_english(lang_code: Optional[str] = None) -> bool:
     """Verifica se il codice lingua indica l'inglese."""
     if not lang_code:
         return False
-    clean = str(lang_code).lower().strip()
+    clean = lang_code.lower().strip()
     return clean.startswith("en") or "eng" in clean
 
 
@@ -128,3 +129,55 @@ def get_month_label(month_num: int, full: bool = False, lang: str = "it") -> str
     if is_english(lang):
         return MONTHS_FULL_EN[idx] if full else MONTHS_SHORT_EN[idx]
     return MONTHS_FULL_IT[idx] if full else MONTHS_SHORT_IT[idx]
+
+
+def clean_spoken_email(raw_email: Optional[str]) -> str:
+    """
+    Pulisce e normalizza indirizzi email pronunciati o trascritti da speech-to-text.
+    Gestisce espressioni fonetiche del parlato ('chiocciola', 'punto', spazi):
+      - 'Giorgio.chiocciola@gmail.com' -> 'giorgio@gmail.com'
+      - 'giorgio chiocciola gmail punto com' -> 'giorgio@gmail.com'
+      - 'mario.rossi chiocciola yahoo punto it' -> 'mario.rossi@yahoo.it'
+    Se l'indirizzo risultante non è sintatticamente valido, restituisce '' (stringa vuota).
+    """
+    if not raw_email or not isinstance(raw_email, str):
+        return ""
+    text = raw_email.strip().lower()
+    text = re.sub(r'[\._-]?chiocciola@?', '@', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+chiocciola\s+', '@', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+at\s+', '@', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+punto\s+', '.', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+dot\s+', '.', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', '', text)
+
+    match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
+    if match:
+        cleaned = match.group(0).strip('.')
+        if '.' in cleaned.split('@')[-1] and len(cleaned.split('@')[-1].split('.')[-1]) >= 2:
+            return cleaned
+    return ""
+
+
+def is_self_mention(text: Optional[str], self_kws: Any) -> bool:
+    """
+    Verifica se una stringa (nome interlocutore, entità o destinatario) si riferisce all'utente.
+    Previene categoricamente falsi positivi di sottostringa su nomi italiani come 'Giorgio', 'Antonio',
+    'Mario', 'Claudio', 'Fabio' causati da keyword brevi come 'io' o 'me'.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    lower = text.lower().strip()
+    tokens = set(re.split(r'[\s_,\.\-\/]+', lower))
+    for k in self_kws:
+        k_clean = str(k).strip().lower()
+        if not k_clean:
+            continue
+        if lower == k_clean:
+            return True
+        if " " in k_clean:
+            if k_clean in lower:
+                return True
+        elif k_clean in tokens:
+            return True
+    return False
+

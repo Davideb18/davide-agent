@@ -8,6 +8,7 @@ import uuid
 import streamlit as st
 from src.agent.domain.enums import ActionStatus, ActionType
 from src.agent.domain.models import SessionExtractionResult, Contact, ExtractedEntity
+from src.agent.domain.datetime_utils import is_self_mention, clean_spoken_email
 from src.agent.presentation.state import (
     run_async,
     is_calendar_live,
@@ -31,7 +32,7 @@ def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult
         if user_profile.full_name: self_names.add(user_profile.full_name.lower())
         for a in user_profile.aliases: self_names.add(a.lower())
 
-    is_self = any(k in ent_name for k in self_names)
+    is_self = is_self_mention(ent_name, self_names)
 
     # 2. Controlla tra le proposed_actions di tipo EMAIL_DRAFT
     for act in session.proposed_actions:
@@ -41,7 +42,7 @@ def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult
             if ent_name in r_name or r_name in ent_name:
                 ent.email = r_email
                 return r_email
-            if is_self and (any(k in r_name for k in self_names) or (user_profile and user_profile.email and user_profile.email.lower() in r_email.lower())):
+            if is_self and (is_self_mention(r_name, self_names) or (user_profile and user_profile.email and user_profile.email.lower() in r_email.lower())):
                 ent.email = r_email
                 return r_email
 
@@ -51,6 +52,14 @@ def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult
     if is_self and found_emails:
         ent.email = found_emails[0]
         return found_emails[0]
+    elif not is_self and found_emails:
+        user_email = (user_profile.email or "").lower() if user_profile else ""
+        for em in found_emails:
+            clean_em = clean_spoken_email(em)
+            if clean_em and clean_em.lower() != user_email:
+                if ent_name and ent_name in clean_em.lower():
+                    ent.email = clean_em
+                    return clean_em
 
     return ""
 
@@ -108,8 +117,34 @@ def render_sidebar(session: SessionExtractionResult):
             unsafe_allow_html=True,
         )
 
-        matched_entities = [e for e in session.entities if e.matched_contact_id]
-        other_entities = [e for e in session.entities if not e.matched_contact_id]
+        # Deduplicazione sicura per matched_contact_id
+        seen_matched_c_ids = set()
+        matched_entities = []
+        for e in session.entities:
+            if e.matched_contact_id and e.matched_contact_id not in seen_matched_c_ids:
+                seen_matched_c_ids.add(e.matched_contact_id)
+                matched_entities.append(e)
+
+        # Filtro e deduplicazione altre entità (escludendo l'utente per evitare duplicazioni)
+        user_profile = st.session_state.get("user_profile")
+        user_filter_kws = {"me", "me stesso", "myself", "io", "me stessa", "self", "utente"}
+        if user_profile:
+            if user_profile.first_name: user_filter_kws.add(user_profile.first_name.lower().strip())
+            if user_profile.full_name: user_filter_kws.add(user_profile.full_name.lower().strip())
+            for a in user_profile.aliases: user_filter_kws.add(a.lower().strip())
+
+        seen_other_names = set()
+        other_entities = []
+        for e in session.entities:
+            if not e.matched_contact_id:
+                norm_n = (e.raw_name or "").lower().strip()
+                if (
+                    norm_n
+                    and norm_n not in seen_other_names
+                    and not is_self_mention(norm_n, user_filter_kws)
+                ):
+                    seen_other_names.add(norm_n)
+                    other_entities.append(e)
 
         # Se ci sono contatti riconosciuti nella rubrica interna
         if matched_entities:
@@ -212,7 +247,7 @@ def render_sidebar(session: SessionExtractionResult):
                     if user_profile.full_name: self_names.add(user_profile.full_name.lower())
                     for a in user_profile.aliases: self_names.add(a.lower())
 
-                is_self = any(k in raw_lower for k in self_names)
+                is_self = is_self_mention(target_ent.raw_name, self_names)
 
                 if is_self:
                     default_fn = user_profile.first_name if user_profile else "Me"
@@ -241,15 +276,25 @@ def render_sidebar(session: SessionExtractionResult):
                         f"<p style='font-size:12px; font-weight:700; margin-bottom:6px;'>Salva Persona in Rubrica ({html.escape(target_ent.raw_name)})</p>",
                         unsafe_allow_html=True,
                     )
-                    q_fn = st.text_input("Nome:", value=default_fn, key=f"q_fn_{safe_id}")
-                    q_ln = st.text_input("Cognome (opzionale):", value=default_ln, key=f"q_ln_{safe_id}")
+                    if f"q_fn_{safe_id}" not in st.session_state:
+                        st.session_state[f"q_fn_{safe_id}"] = default_fn
+                    q_fn = st.text_input("Nome:", key=f"q_fn_{safe_id}")
+
+                    if f"q_ln_{safe_id}" not in st.session_state:
+                        st.session_state[f"q_ln_{safe_id}"] = default_ln
+                    q_ln = st.text_input("Cognome (opzionale):", key=f"q_ln_{safe_id}")
+
+                    if f"q_desc_{safe_id}" not in st.session_state:
+                        st.session_state[f"q_desc_{safe_id}"] = default_desc
                     q_desc = st.text_input(
                         "Descrizione / Relazione (opzionale):",
-                        value=default_desc,
                         key=f"q_desc_{safe_id}",
                         help="Es. Famiglia, Amico, Collega, Personale / Utente",
                     )
-                    q_mail = st.text_input("Email (opzionale):", value=ent_email, key=f"q_mail_{safe_id}")
+
+                    if f"q_mail_{safe_id}" not in st.session_state:
+                        st.session_state[f"q_mail_{safe_id}"] = ent_email
+                    q_mail = st.text_input("Email (opzionale):", key=f"q_mail_{safe_id}")
 
                     if st.button("Salva Persona", type="primary", use_container_width=True, key=f"btn_save_cnt_{safe_id}"):
                         new_contact = Contact(
@@ -280,7 +325,7 @@ def render_sidebar(session: SessionExtractionResult):
                                 if (
                                     target_ent.raw_name.lower() in r_name
                                     or r_name in target_ent.raw_name.lower()
-                                    or (is_self and any(k in r_name for k in self_names))
+                                    or (is_self and is_self_mention(r_name, self_names))
                                 ):
                                     if not act.email_data.recipient_email:
                                         act.email_data.recipient_email = new_contact.email

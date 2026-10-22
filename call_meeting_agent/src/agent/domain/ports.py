@@ -26,6 +26,7 @@ class LLMExtractorPort(Protocol):
         user_profile_language: Optional[str] = None,
         user_name: Optional[str] = None,
         user_email: Optional[str] = None,
+        known_contacts_summary: Optional[List[str]] = None,
     ) -> SessionExtractionResult:
         ...
 
@@ -37,6 +38,7 @@ class LLMExtractorPort(Protocol):
         user_profile_language: Optional[str] = None,
         user_name: Optional[str] = None,
         user_email: Optional[str] = None,
+        known_contacts_summary: Optional[List[str]] = None,
     ) -> SessionExtractionResult:
         ...
 
@@ -151,6 +153,15 @@ class KnowledgeServicePort(Protocol):
         meeting_rel_path: str,
         summary: str,
         insights: Optional[List[str]] = None,
+    ) -> bool:
+        ...
+
+    # Registra un'interazione email (bozza o inviata) nel dossier della persona in PEOPLE/
+    async def record_email_interaction(
+        self,
+        person_name: str,
+        email_data: EmailPayload,
+        status_label: str = "Bozza / Email registrata",
     ) -> bool:
         ...
 

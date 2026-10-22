@@ -62,6 +62,17 @@ class CommitActionUseCase:
         key_lock = self._get_loop_key_lock(key)
 
         async with key_lock:
+            # Se l'azione è un TASK_TODO già eseguito (es. sync background) e l'utente fornisce un payload
+            # modificato, consentiamo l'aggiornamento generando una nuova chiave di idempotenza e reimpostando lo stato.
+            if (
+                action.action_type == ActionType.TASK_TODO
+                and user_modified_payload is not None
+                and action.status == ActionStatus.EXECUTED
+            ):
+                import uuid
+                action.status = ActionStatus.PROPOSED
+                action.idempotency_key = f"idemp_task_upd_{uuid.uuid4().hex[:10]}"
+
             # 1. CONTROLLO DI IDEMPOTENZA (Anti-Doppio Click con protezione da Race Condition)
             already_used = await self.repo.is_idempotency_key_used(action.idempotency_key)
             if already_used or action.status == ActionStatus.EXECUTED:
@@ -102,6 +113,16 @@ class CommitActionUseCase:
                         payload=action.email_data,
                         idempotency_key=action.idempotency_key,
                     )
+                    # Registra l'interazione email nella scheda del contatto in PEOPLE/
+                    if self.knowledge and hasattr(self.knowledge, "record_email_interaction") and action.email_data.recipient_name:
+                        try:
+                            await self.knowledge.record_email_interaction(
+                                person_name=action.email_data.recipient_name,
+                                email_data=action.email_data,
+                                status_label="Bozza salvata in Gmail",
+                            )
+                        except Exception:
+                            pass
                     success_msg = f"Bozza Gmail generata con successo! (ID: {draft_id})"
 
                 elif action.action_type == ActionType.KNOWLEDGE_NOTE:
@@ -130,7 +151,7 @@ class CommitActionUseCase:
                         return False, "Dati dei task mancanti!"
                     tasks_path = await self.knowledge.append_tasks(
                         payload=action.task_data,
-                        meeting_ref=action.task_data.target_project or "Meeting Sync"
+                        meeting_ref=action.task_data.target_project or "Task Session"
                     )
                     success_msg = f"Checklist operativa salvata nei Task di Progetto! ({tasks_path})"
 

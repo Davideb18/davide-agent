@@ -66,18 +66,36 @@ class AppleRemindersAdapter:
         '''
 
         def _run_script():
-            # Assicura avvio in background senza rubare il focus all'utente
-            try:
-                subprocess.run(["open", "-g", "-a", "Reminders"], capture_output=True, timeout=2)
-            except Exception:
-                pass
+            import time
+            last_res = None
+            for attempt in range(2):
+                try:
+                    subprocess.run(["open", "-g", "-a", "Reminders"], capture_output=True, timeout=3)
+                    if attempt == 0:
+                        time.sleep(0.3)
+                except Exception:
+                    pass
 
-            return subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=12,
-            )
+                try:
+                    res = subprocess.run(
+                        ["osascript", "-e", 'tell application "Reminders" to launch', "-e", script],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if res.returncode == 0:
+                        return res
+                    last_res = res
+                    if "-600" in (res.stderr or "") and attempt == 0:
+                        time.sleep(0.8)
+                        continue
+                    return res
+                except subprocess.TimeoutExpired:
+                    if attempt == 0:
+                        time.sleep(0.6)
+                        continue
+                    raise
+            return last_res or subprocess.CompletedProcess(args=[], returncode=1, stderr="Operazione non completata.")
 
         try:
             result = await asyncio.to_thread(_run_script)
@@ -90,12 +108,12 @@ class AppleRemindersAdapter:
             stderr = result.stderr.strip() if result.stderr else "Errore sconosciuto durante l'esecuzione di AppleScript."
             logger.warning(f"Errore osascript Reminders: {stderr}")
             if "not allowed" in stderr.lower() or "permission" in stderr.lower() or "-1743" in stderr:
-                return False, "Permesso negato: concedi ad Aria l'accesso all'app Promemoria in 'Impostazioni di Sistema > Privacy e Sicurezza > Automazione'."
-            return False, f"Impossibile esportare su Promemoria: {stderr}"
+                return False, "Sincronizzazione Apple Promemoria non autorizzata da macOS (Automazione non abilitata). I compiti sono comunque archiviati al sicuro in Tasks.md e nel database locale."
+            return False, f"Impossibile esportare su Promemoria: {stderr}. I compiti restano al sicuro in Tasks.md."
 
         except subprocess.TimeoutExpired:
-            logger.error("Timeout durante l'interazione con Apple Reminders via osascript.")
-            return False, "Timeout: l'app Promemoria di Apple non ha risposto entro 12 secondi."
+            logger.warning("Timeout (10s) durante l'interazione con Apple Reminders via osascript.")
+            return False, "L'app Promemoria di Apple non ha risposto entro 10 secondi (richiede autorizzazione macOS o l'app non è aperta). I compiti sono comunque archiviati e custoditi al sicuro in Tasks.md."
         except Exception as e:
             logger.error(f"Eccezione inattesa in AppleRemindersAdapter: {e}")
-            return False, f"Errore di sistema Apple Reminders: {e}"
+            return False, f"Errore Apple Reminders: {e}. I compiti restano al sicuro in Tasks.md."

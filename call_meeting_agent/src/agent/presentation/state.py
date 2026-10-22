@@ -116,28 +116,34 @@ def run_async(coro):
 
 def init():
     """Inizializza tutti i servizi reali una sola volta per sessione (con aggiornamento dinamico)."""
-    # 1. Calendario: Google Calendar Live se autenticato, altrimenti Calendario Locale dinamico
+    # 1. Calendario: Google Calendar Live se autenticato, altrimenti Calendario Locale dinamico (preservando istanza in-memory)
     _required_cal_methods = ("get_events", "check_is_busy", "find_alternative_slots", "create_event")
-    if os.path.exists("data/token.json"):
-        try:
-            if not isinstance(st.session_state.get("calendar"), LiveCalendarService):
+    cal_in_state = st.session_state.get("calendar")
+    has_valid_cal = cal_in_state is not None and all(hasattr(cal_in_state, m) for m in _required_cal_methods)
+
+    if not has_valid_cal or not isinstance(cal_in_state, LiveCalendarService):
+        if os.path.exists("data/token.json"):
+            try:
                 st.session_state.calendar = LiveCalendarService()
-        except Exception:
-            pass
+            except Exception:
+                if not has_valid_cal:
+                    st.session_state.calendar = LocalCalendarService()
+        elif not has_valid_cal:
+            st.session_state.calendar = LocalCalendarService()
 
-    if "calendar" not in st.session_state or not all(hasattr(st.session_state.calendar, m) for m in _required_cal_methods):
-        st.session_state.calendar = LocalCalendarService()
+    # 2. Email: Gmail Live se autenticato, altrimenti Servizio Email Locale dinamico (preservando bozze in-memory)
+    mail_in_state = st.session_state.get("email")
+    has_valid_mail = mail_in_state is not None and hasattr(mail_in_state, "create_draft")
 
-    # 2. Email: Gmail Live se autenticato, altrimenti Servizio Email Locale dinamico
-    if os.path.exists("data/token.json"):
-        try:
-            if not isinstance(st.session_state.get("email"), LiveEmailService):
+    if not has_valid_mail or not isinstance(mail_in_state, LiveEmailService):
+        if os.path.exists("data/token.json"):
+            try:
                 st.session_state.email = LiveEmailService()
-        except Exception:
-            pass
-
-    if "email" not in st.session_state or not hasattr(st.session_state.email, "create_draft"):
-        st.session_state.email = LocalEmailService()
+            except Exception:
+                if not has_valid_mail:
+                    st.session_state.email = LocalEmailService()
+        elif not has_valid_mail:
+            st.session_state.email = LocalEmailService()
 
     if "aria_initialized" not in st.session_state:
         # 3. Database SQLite Locale

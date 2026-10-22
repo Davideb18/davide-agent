@@ -26,6 +26,7 @@ from src.agent.domain.datetime_utils import (
     format_full_localized_slot,
     resolve_timezone,
     is_english as check_is_english,
+    is_self_mention,
 )
 
 
@@ -36,6 +37,15 @@ def _is_english_session() -> bool:
         return False
     lang = getattr(session, "detected_language", "it") or "it"
     return check_is_english(str(lang))
+
+
+def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Assicura che il datetime sia timezone-aware in UTC, rendendo matematicamente impossibile un TypeError."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _format_slot_label(dt: datetime) -> str:
@@ -51,16 +61,36 @@ def _sync_calendar_change_to_email(action_id: str, new_slot_str: str) -> None:
     if not session or not hasattr(st.session_state, "extractor") or not st.session_state.extractor:
         return
 
-    # Rigenera ESCLUSIVAMENTE l'email collegata a questo ID di appuntamento
-    email_act = next(
-        (
-            a for a in session.proposed_actions
-            if a.action_type == ActionType.EMAIL_DRAFT and a.email_data and (
-                a.email_data.linked_calendar_action_id == action_id
-            )
-        ),
-        None,
-    )
+    cal_act = next((a for a in session.proposed_actions if a.id == action_id), None)
+    cal_title = (cal_act.calendar_data.title or "").lower() if cal_act and cal_act.calendar_data else ""
+    cal_attendees = [att.lower() for att in (cal_act.calendar_data.attendees or [])] if cal_act and cal_act.calendar_data else []
+
+    email_act = None
+    for a in session.proposed_actions:
+        if a.action_type == ActionType.EMAIL_DRAFT and a.email_data:
+            # 1. Corrispondenza per linked_calendar_action_id
+            if a.email_data.linked_calendar_action_id == action_id:
+                email_act = a
+                break
+            # 2. Corrispondenza per nome interlocutore
+            r_name = (a.email_data.recipient_name or "").lower().strip()
+            if r_name and (r_name in cal_title or any(r_name in att for att in cal_attendees)):
+                a.email_data.linked_calendar_action_id = action_id
+                email_act = a
+                break
+            # 3. Corrispondenza per email esterna correlata alla call
+            user_profile = st.session_state.get("user_profile")
+            user_kws = {"me", "me stesso", "myself", "io", "stesso"}
+            if user_profile and user_profile.first_name:
+                user_kws.add(user_profile.first_name.lower())
+            if not is_self_mention(r_name, user_kws):
+                subj_low = (a.email_data.subject or "").lower()
+                body_low = (a.email_data.body_markdown or "").lower()
+                if any(w in subj_low or w in body_low for w in ["call", "appuntamento", "meeting", "riunione", "orario"]):
+                    a.email_data.linked_calendar_action_id = action_id
+                    email_act = a
+                    break
+
     if email_act and email_act.email_data:
         try:
             ver = st.session_state.get(f"email_ver_{email_act.id}", 0)
@@ -75,12 +105,21 @@ def _sync_calendar_change_to_email(action_id: str, new_slot_str: str) -> None:
                         original_payload=email_act.email_data,
                         new_slot_str=new_slot_str,
                         history=history,
+                        user_tz=st.session_state.get("user_timezone", "Europe/Rome"),
                     )
                 )
-            email_act.email_data = new_payload
-            ver_key = f"email_ver_{email_act.id}"
-            st.session_state[ver_key] = ver + 1
-            st.toast("Bozza email riallineata al nuovo orario!", icon="✉️")
+            if new_payload:
+                email_act.email_data = new_payload
+                new_ver = ver + 1
+                st.session_state[f"email_ver_{email_act.id}"] = new_ver
+                st.session_state[f"body_{email_act.id}_{new_ver}"] = new_payload.body_markdown
+                st.session_state[f"subj_{email_act.id}_{new_ver}"] = new_payload.subject
+
+                # Sincronizza anche con il database se presente
+                if hasattr(st.session_state, "repo") and st.session_state.repo:
+                    run_async(st.session_state.repo.save_session(session))
+
+                st.toast("Bozza email riallineata al nuovo orario!", icon="✉️")
         except Exception:
             pass
 
@@ -136,9 +175,18 @@ def _generate_mini_week_html(
     local_tz: ZoneInfo,
 ) -> str:
     """Genera la mini griglia settimanale in perfetto stile nativo Apple Calendar macOS (Sonoma/Sequoia)."""
-    min_h = 8
-    max_h = 19
-    hour_height = 26  # 26px per ora per garantire totale leggibilità di titolo e orario
+    # Determina l'intervallo orario ottimale (min_h e max_h) in modo dinamico
+    # per includere eventi del mattino presto, orario d'ufficio e impegni serali/notturni
+    all_hours = [start_local.hour, (end_local.hour if end_local.minute == 0 else end_local.hour + 1)]
+    for ev in week_events:
+        s_loc = _to_local(ev.start_utc, local_tz)
+        e_loc = _to_local(ev.end_utc, local_tz)
+        all_hours.append(s_loc.hour)
+        all_hours.append(e_loc.hour if e_loc.minute == 0 else e_loc.hour + 1)
+
+    min_h = max(0, min(7, min(all_hours)))
+    max_h = min(24, max(22, max(all_hours)))
+    hour_height = 24  # 24px per ora per garantire totale leggibilità di titolo e orario
     total_h = (max_h - min_h) * hour_height
     days = [display_monday + timedelta(days=i) for i in range(7)]
 
@@ -150,7 +198,7 @@ def _generate_mini_week_html(
             events_by_day[diff].append(ev)
 
     lines: List[str] = [
-        '<div style="background:#FFFFFF; border:1px solid #E5E5EA; border-radius:14px; padding:14px 16px; margin-top:10px; font-family:-apple-system,BlinkMacSystemFont,\'SF Pro Text\',sans-serif; box-shadow:0 4px 16px rgba(0,0,0,0.05);">',
+        '<div style="background:#FFFFFF; border:1px solid #E5E5EA; border-radius:14px; padding:14px 16px; margin-top:10px; font-family:-apple-system,BlinkMacSystemFont,\'SF Pro Text\',sans-serif; box-shadow:0 4px 16px rgba(0,0,0,0.05); overflow:hidden;">',
         '  <div style="display:flex; border-bottom:1px solid #E5E5EA; padding-bottom:8px; margin-bottom:6px;">',
         '    <div style="width:46px; font-size:10px; color:#8E8E93; font-weight:700; text-align:right; padding-right:10px;">Ora</div>',
     ]
@@ -182,8 +230,8 @@ def _generate_mini_week_html(
         lines.append(f'    <div style="flex:1; text-align:center;">{d_html}</div>')
     lines.append('  </div>')
 
-    # Corpo griglia oraria in stile Apple Calendar
-    lines.append(f'  <div style="display:flex; height:{total_h}px; position:relative;">')
+    # Corpo griglia oraria in stile Apple Calendar (con overflow:hidden per evitare fuoriuscite visive)
+    lines.append(f'  <div style="display:flex; height:{total_h}px; position:relative; overflow:hidden;">')
 
     # Asse orari a sinistra
     lines.append('    <div style="width:46px; position:relative; border-right:1px solid #E5E5EA;">')
@@ -202,40 +250,48 @@ def _generate_mini_week_html(
 
     for day_idx, d in enumerate(days):
         col_bg = "background:rgba(0,122,255,0.04);" if d == target_date else ""
-        lines.append(f'      <div style="flex:1; position:relative; border-right:1px solid #E5E5EA; {col_bg}">')
+        lines.append(f'      <div style="flex:1; position:relative; border-right:1px solid #E5E5EA; overflow:hidden; {col_bg}">')
 
-        # Impegni reali Google Calendar (Stile Card Apple Calendar)
+        day_start = datetime(d.year, d.month, d.day, min_h, 0, 0, tzinfo=local_tz)
+        day_end = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=local_tz) if max_h >= 24 else datetime(d.year, d.month, d.day, max_h, 0, 0, tzinfo=local_tz)
+
+        # Impegni reali Google Calendar con clamping rigoroso all'intervallo visibile
         for ev in events_by_day.get(day_idx, []):
             ev_s = _to_local(ev.start_utc, local_tz)
             ev_e = _to_local(ev.end_utc, local_tz)
-            s_frac = (ev_s.hour - min_h) + ev_s.minute / 60.0
-            dur = (ev_e - ev_s).total_seconds() / 3600.0
-            if s_frac + dur <= 0 or s_frac >= (max_h - min_h):
+            vis_s = max(ev_s, day_start)
+            vis_e = min(ev_e, day_end)
+            if vis_e <= vis_s:
                 continue
-            top_px = max(0, int(s_frac * hour_height))
-            h_px = max(22, int(dur * hour_height) - 2)
+
+            s_frac = (vis_s.hour - min_h) + vis_s.minute / 60.0
+            dur = (vis_e - vis_s).total_seconds() / 3600.0
+            top_px = max(0, min(int(s_frac * hour_height), total_h - 18))
+            h_px = max(18, min(int(dur * hour_height) - 2, total_h - top_px))
             safe_title = html.escape(ev.title)
             lines.append(
                 f'        <div style="position:absolute; left:2px; right:2px; top:{top_px}px; height:{h_px}px; background:#EFF6FF; border-left:3.5px solid #2563EB; border-radius:5px; padding:2px 5px; overflow:hidden; z-index:1; box-shadow:0 1px 3px rgba(0,0,0,0.06);" title="{safe_title} ({ev_s.strftime("%H:%M")} – {ev_e.strftime("%H:%M")})">'
                 f'          <div style="font-weight:700; font-size:10px; color:#1E40AF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">{safe_title}</div>'
                 f'          <div style="font-size:8.5px; color:#3B82F6; font-weight:600; line-height:1.1;">🕒 {ev_s.strftime("%H:%M")} – {ev_e.strftime("%H:%M")}</div>'
                 f'        </div>'
-
             )
 
-        # Box Nuovo Appuntamento Proposto (Apple Blue vibrante con ombra morbida)
+        # Box Nuovo Appuntamento Proposto (clamped alle ore della griglia)
         if d == target_date:
-            p_s_frac = (start_local.hour - min_h) + start_local.minute / 60.0
-            p_dur = (end_local - start_local).total_seconds() / 3600.0
-            p_top_px = max(0, int(p_s_frac * hour_height))
-            p_h_px = max(26, int(p_dur * hour_height) - 2)
-            safe_t = html.escape(title or "Nuovo Appuntamento")
-            lines.append(
-                f'        <div style="position:absolute; left:2px; right:2px; top:{p_top_px}px; height:{p_h_px}px; background:#007AFF; border-left:3.5px solid #0051B3; border-radius:6px; padding:2px 6px; overflow:hidden; z-index:3; box-shadow:0 3px 10px rgba(0,122,255,0.35);" title="Nuovo: {safe_t} ({start_local.strftime("%H:%M")})">'
-                f'          <div style="font-weight:800; font-size:10.5px; color:#FFFFFF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">📍 {safe_t}</div>'
-                f'          <div style="font-size:9px; color:#E0F2FE; font-weight:700; line-height:1.1;">🕒 {start_local.strftime("%H:%M")} – {end_local.strftime("%H:%M")}</div>'
-                f'        </div>'
-            )
+            p_vis_s = max(start_local, day_start)
+            p_vis_e = min(end_local, day_end)
+            if p_vis_e > p_vis_s:
+                p_s_frac = (p_vis_s.hour - min_h) + p_vis_s.minute / 60.0
+                p_dur = (p_vis_e - p_vis_s).total_seconds() / 3600.0
+                p_top_px = max(0, min(int(p_s_frac * hour_height), total_h - 22))
+                p_h_px = max(22, min(int(p_dur * hour_height) - 2, total_h - p_top_px))
+                safe_t = html.escape(title or "Nuovo Appuntamento")
+                lines.append(
+                    f'        <div style="position:absolute; left:2px; right:2px; top:{p_top_px}px; height:{p_h_px}px; background:#007AFF; border-left:3.5px solid #0051B3; border-radius:6px; padding:2px 6px; overflow:hidden; z-index:3; box-shadow:0 3px 10px rgba(0,122,255,0.35);" title="Nuovo: {safe_t} ({start_local.strftime("%H:%M")})">'
+                    f'          <div style="font-weight:800; font-size:10.5px; color:#FFFFFF; line-height:1.2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">📍 {safe_t}</div>'
+                    f'          <div style="font-size:9px; color:#E0F2FE; font-weight:700; line-height:1.1;">🕒 {start_local.strftime("%H:%M")} – {end_local.strftime("%H:%M")}</div>'
+                    f'        </div>'
+                )
         lines.append('      </div>')
 
     lines.append('    </div>')
@@ -318,8 +374,12 @@ def render_calendar_card(action: ProposedAction, committer):
     is_conflict = (action.status == ActionStatus.CONFLICT_DETECTED)
     conflict_title = ""
     if action.status != ActionStatus.EXECUTED:
+        d_start = _ensure_utc(data.start_utc)
+        d_end = _ensure_utc(data.end_utc)
         for ev in week_events:
-            if data.start_utc < ev.end_utc and data.end_utc > ev.start_utc:
+            ev_start = _ensure_utc(ev.start_utc)
+            ev_end = _ensure_utc(ev.end_utc)
+            if d_start and d_end and ev_start and ev_end and d_start < ev_end and d_end > ev_start:
                 # Non considerare in conflitto l'evento appena inserito con lo stesso titolo
                 if ev.title.strip().lower() == data.title.strip().lower():
                     continue
@@ -411,12 +471,18 @@ def render_calendar_card(action: ProposedAction, committer):
                             data.end_utc = alt_utc + timedelta(minutes=duration_min)
                             action.status = ActionStatus.PROPOSED
                             data.alternative_slots_utc = []
-                            alt_mon = alt_loc.date() - timedelta(days=alt_loc.date().weekday())
-                            st.session_state[week_offset_key] = (alt_mon - meeting_monday).days // 7
+                            st.session_state[week_offset_key] = 0
+                            st.session_state[f"cal_date_{action.id}"] = alt_loc.date()
+                            st.session_state[f"cal_time_{action.id}"] = dt_time(alt_loc.hour, alt_loc.minute)
                             new_slot_text = (
                                 f"{WEEKDAYS_FULL_EN[alt_loc.weekday()]} {alt_loc.day} {MONTHS_EN[alt_loc.month-1]} at {alt_loc.strftime('%H:%M')}"
                                 if is_en else
                                 f"{WEEKDAYS_FULL_IT[alt_loc.weekday()]} {alt_loc.day} {MONTHS_IT[alt_loc.month-1]} ore {alt_loc.strftime('%H:%M')}"
+                            )
+                            data.slot_reasoning = (
+                                f"Slot alternativo consigliato ({btn_lbl}) applicato per evitare sovrapposizioni in agenda."
+                                if not is_en else
+                                f"Recommended alternative slot ({btn_lbl}) applied to resolve calendar conflicts."
                             )
                             _sync_calendar_change_to_email(action.id, new_slot_text)
                             st.toast(f"Orario aggiornato con successo: {btn_lbl}", icon="🗓️")
@@ -474,6 +540,21 @@ def render_calendar_card(action: ProposedAction, committer):
                 """,
                 unsafe_allow_html=True,
             )
+
+            if getattr(data, "slot_reasoning", None):
+                st.markdown(
+                    f"""
+                    <div style="background:#F0F9FF; border:1px solid #BAE6FD; border-left:4px solid #007AFF; border-radius:10px; padding:10px 14px; margin-top:10px;">
+                        <div style="font-size:10.5px; font-weight:800; color:#0369A1; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:3px; display:flex; align-items:center; gap:6px;">
+                            <span>💡</span> <span>{"Slot Reasoning" if is_en else "Motivazione orario individuato"}</span>
+                        </div>
+                        <div style="font-size:12.5px; color:#0C4A6E; line-height:1.45; font-weight:500;">
+                            {html.escape(data.slot_reasoning)}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         with col_edit:
             is_exec = (action.status == ActionStatus.EXECUTED)
