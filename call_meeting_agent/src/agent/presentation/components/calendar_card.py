@@ -315,7 +315,7 @@ def render_calendar_card(action: ProposedAction, committer):
     week_events: List[CalendarEventItem] = _fetch_calendar_events(cal_service, w_start_utc, w_end_utc)
 
     # Verifica collisione effettiva sull'evento proposto (escludendo se già sincronizzato o evento stesso)
-    is_conflict = False
+    is_conflict = (action.status == ActionStatus.CONFLICT_DETECTED)
     conflict_title = ""
     if action.status != ActionStatus.EXECUTED:
         for ev in week_events:
@@ -326,6 +326,24 @@ def render_calendar_card(action: ProposedAction, committer):
                 is_conflict = True
                 conflict_title = ev.title
                 break
+    else:
+        is_conflict = False
+
+    if is_conflict and not conflict_title:
+        conflict_title = "Impegno già presente in calendario" if not is_en else "Existing calendar commitment"
+
+    # Se c'è conflitto ma non abbiamo ancora calcolato le alternative, calcolale all'istante
+    if is_conflict and not data.alternative_slots_utc and action.status != ActionStatus.EXECUTED:
+        try:
+            if cal_service and hasattr(cal_service, "find_alternative_slots"):
+                user_tz_curr = st.session_state.get("user_timezone", "Europe/Rome")
+                found_alts = run_async(
+                    cal_service.find_alternative_slots(data.start_utc, duration_min, count=3, user_tz=user_tz_curr)
+                )
+                if found_alts:
+                    data.alternative_slots_utc = found_alts
+        except Exception:
+            pass
 
 
     live_connected = is_calendar_live()
@@ -358,7 +376,12 @@ def render_calendar_card(action: ProposedAction, committer):
                 if is_en else
                 f"Alle ore <b>{start_local.strftime('%H:%M')}</b> hai già in calendario: <b style='text-decoration:underline;'>{html.escape(conflict_title)}</b>."
             )
-            warn_sub = "👇 Click a recommended free slot to apply it immediately:" if is_en else "👇 Clicca su uno slot libero consigliato per applicarlo all'istante:"
+            has_alts = bool(data.alternative_slots_utc and action.status != ActionStatus.EXECUTED)
+            if has_alts:
+                warn_sub = "👇 Click a recommended free slot to apply it immediately:" if is_en else "👇 Clicca su uno slot libero consigliato per applicarlo all'istante:"
+            else:
+                warn_sub = "👉 Seleziona un orario alternativo dal pannello 'Regola Rapidamente' a destra:" if not is_en else "👉 Select an alternative slot from the 'Quick Adjust' panel on the right:"
+
             status_html = (
                 f"<div style='background:#FEF2F2; border:3.5px solid #EF4444; border-radius:14px; padding:16px 20px; margin-bottom:16px; box-shadow:0 4px 14px rgba(239,68,68,0.15);'>"
                 f"  <div style='display:flex; align-items:center; gap:10px; margin-bottom:6px;'>"
@@ -377,7 +400,7 @@ def render_calendar_card(action: ProposedAction, committer):
             )
             st.markdown(status_html, unsafe_allow_html=True)
 
-            if data.alternative_slots_utc and action.status != ActionStatus.EXECUTED:
+            if has_alts:
                 alt_cols = st.columns(min(len(data.alternative_slots_utc), 3))
                 for idx, alt_utc in enumerate(data.alternative_slots_utc[:3]):
                     alt_loc = _to_local(alt_utc, local_tz)
@@ -386,6 +409,8 @@ def render_calendar_card(action: ProposedAction, committer):
                         if st.button(f"👉 {btn_lbl}", key=f"btn_alt_slot_{action.id}_{idx}", use_container_width=True):
                             data.start_utc = alt_utc
                             data.end_utc = alt_utc + timedelta(minutes=duration_min)
+                            action.status = ActionStatus.PROPOSED
+                            data.alternative_slots_utc = []
                             alt_mon = alt_loc.date() - timedelta(days=alt_loc.date().weekday())
                             st.session_state[week_offset_key] = (alt_mon - meeting_monday).days // 7
                             new_slot_text = (
@@ -394,6 +419,7 @@ def render_calendar_card(action: ProposedAction, committer):
                                 f"{WEEKDAYS_FULL_IT[alt_loc.weekday()]} {alt_loc.day} {MONTHS_IT[alt_loc.month-1]} ore {alt_loc.strftime('%H:%M')}"
                             )
                             _sync_calendar_change_to_email(action.id, new_slot_text)
+                            st.toast(f"Orario aggiornato con successo: {btn_lbl}", icon="🗓️")
                             st.rerun()
                 st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         else:
@@ -492,6 +518,8 @@ def render_calendar_card(action: ProposedAction, committer):
             if new_start_utc != data.start_utc:
                 data.start_utc = new_start_utc
                 data.end_utc = data.start_utc + timedelta(minutes=duration_min)
+                action.status = ActionStatus.PROPOSED
+                data.alternative_slots_utc = []
                 new_monday = new_date - timedelta(days=new_date.weekday())
                 st.session_state[week_offset_key] = (new_monday - meeting_monday).days // 7
                 new_slot_text = (

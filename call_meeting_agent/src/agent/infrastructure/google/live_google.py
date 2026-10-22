@@ -79,9 +79,15 @@ class LiveCalendarService:
             )
         self.service = build("calendar", "v3", credentials=self.creds)
 
+    @staticmethod
+    def _to_rfc3339(dt: datetime) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     async def check_is_busy(self, start_utc: datetime, end_utc: datetime) -> bool:
-        time_min = start_utc.isoformat()
-        time_max = end_utc.isoformat()
+        time_min = self._to_rfc3339(start_utc)
+        time_max = self._to_rfc3339(end_utc)
 
         events_result = (
             self.service.events()
@@ -99,8 +105,8 @@ class LiveCalendarService:
 
     async def get_events(self, start_utc: datetime, end_utc: datetime) -> List[CalendarEventItem]:
         """Recupera la lista degli eventi del calendario nell'intervallo temporale."""
-        time_min = start_utc.isoformat()
-        time_max = end_utc.isoformat()
+        time_min = self._to_rfc3339(start_utc)
+        time_max = self._to_rfc3339(end_utc)
         try:
             events_result = (
                 self.service.events()
@@ -167,10 +173,10 @@ class LiveCalendarService:
             return []
 
     async def find_alternative_slots(
-        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3
+        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3, user_tz: str = "Europe/Rome"
     ) -> List[datetime]:
         _, alternatives = await evaluate_calendar_slot(
-            self, requested_start_utc, duration_minutes=duration_minutes, max_alternatives=count
+            self, requested_start_utc, duration_minutes=duration_minutes, max_alternatives=count, user_tz=user_tz
         )
         return alternatives
 
@@ -300,10 +306,10 @@ class LocalCalendarService:
         ]
 
     async def find_alternative_slots(
-        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3
+        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3, user_tz: str = "Europe/Rome"
     ) -> List[datetime]:
         _, alternatives = await evaluate_calendar_slot(
-            self, requested_start_utc, duration_minutes=duration_minutes, max_alternatives=count
+            self, requested_start_utc, duration_minutes=duration_minutes, max_alternatives=count, user_tz=user_tz
         )
         return alternatives
 

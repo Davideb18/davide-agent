@@ -19,6 +19,20 @@ class Contact(BaseModel):
     timezone: str = "Europe/Rome"
 
 
+class UserProfile(BaseModel):
+    """Profilo utente letto dal Second Brain (IDENTITY/Profile.md). Source of truth per l'identità."""
+    full_name: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    email: str = ""
+    company: str = ""
+    role: str = ""
+    language: str = ""
+    timezone: str = "Europe/Rome"
+    aliases: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+
 class ExtractedEntity(BaseModel):
     """Un'entità (persona) individuata nell'audio prima o durante la disambiguazione."""
     raw_name: str

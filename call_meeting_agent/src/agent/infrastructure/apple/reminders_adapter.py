@@ -46,26 +46,29 @@ class AppleRemindersAdapter:
 
         items_array_str = ", ".join(sanitized_items)
 
-        # Script AppleScript ultra-veloce non-bloccante con launch in background
+        # Script AppleScript robusto e affidabile: crea ciascun promemoria nella lista di default (o lista indicata)
+        # Assicura corretta coercizione a testo e attende l'inserimento reale
         script = f'''
         tell application "Reminders"
-            if not (exists list "{clean_list_name}") then
-                make new list with properties {{name:"{clean_list_name}"}}
+            set targetList to default list
+            if "{clean_list_name}" is not "" and "{clean_list_name}" is not "Promemoria" and "{clean_list_name}" is not "default" then
+                if not (exists list "{clean_list_name}") then
+                    make new list with properties {{name:"{clean_list_name}"}}
+                end if
+                set targetList to list "{clean_list_name}"
             end if
-            tell list "{clean_list_name}"
-                ignoring application responses
-                    repeat with itemText in {{{items_array_str}}}
-                        make new reminder with properties {{name:itemText}}
-                    end repeat
-                end ignoring
-            end tell
+            set listDisplayName to name of targetList
+            repeat with itemText in {{{items_array_str}}}
+                make new reminder at targetList with properties {{name:(itemText as text)}}
+            end repeat
+            return listDisplayName
         end tell
         '''
 
         def _run_script():
             # Assicura avvio in background senza rubare il focus all'utente
             try:
-                subprocess.run(["open", "-g", "-a", "Reminders"], capture_output=True, timeout=1)
+                subprocess.run(["open", "-g", "-a", "Reminders"], capture_output=True, timeout=2)
             except Exception:
                 pass
 
@@ -73,7 +76,7 @@ class AppleRemindersAdapter:
                 ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
-                timeout=3,
+                timeout=12,
             )
 
         try:
@@ -81,7 +84,8 @@ class AppleRemindersAdapter:
 
             if result.returncode == 0:
                 count = len(sanitized_items)
-                return True, f"{count} promemoria sincronizzati con successo nella lista '{list_name}' di Apple Reminders."
+                actual_list = (result.stdout or "").strip() or list_name
+                return True, f"{count} promemoria salvati con successo nella lista '{actual_list}' di Apple Reminders."
 
             stderr = result.stderr.strip() if result.stderr else "Errore sconosciuto durante l'esecuzione di AppleScript."
             logger.warning(f"Errore osascript Reminders: {stderr}")
@@ -91,7 +95,7 @@ class AppleRemindersAdapter:
 
         except subprocess.TimeoutExpired:
             logger.error("Timeout durante l'interazione con Apple Reminders via osascript.")
-            return False, "Timeout: l'app Promemoria di Apple non ha risposto entro 6 secondi."
+            return False, "Timeout: l'app Promemoria di Apple non ha risposto entro 12 secondi."
         except Exception as e:
             logger.error(f"Eccezione inattesa in AppleRemindersAdapter: {e}")
             return False, f"Errore di sistema Apple Reminders: {e}"

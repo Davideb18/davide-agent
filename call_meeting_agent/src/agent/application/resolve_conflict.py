@@ -34,7 +34,7 @@ async def evaluate_calendar_slot(
 
     req_utc = requested_start_utc if requested_start_utc.tzinfo else requested_start_utc.replace(tzinfo=timezone.utc)
     req_local = req_utc.astimezone(tz)
-    is_evening_request = (req_local.hour >= 19 or req_local.hour < 8)
+    is_evening_request = (req_local.hour >= 18 or req_local.hour < 8)
     is_weekend_request = (req_local.weekday() >= 5)
 
     # 2. Conflitto rilevato! Avviamo la Sliding Window deterministica
@@ -56,7 +56,7 @@ async def evaluate_calendar_slot(
 
         # Filtro orari contestuale: adatta a seconda della natura dell'orario richiesto
         if is_evening_request:
-            is_valid_hour = (cand_local.hour >= 19 or cand_local.hour <= 2)
+            is_valid_hour = (cand_local.hour >= 18 or cand_local.hour <= 2)
         elif is_weekend_request:
             is_valid_hour = (cand_local.weekday() >= 5 and 9 <= cand_local.hour <= 23)
         else:

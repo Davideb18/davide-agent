@@ -84,6 +84,32 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
     if last_adapted_key not in st.session_state:
         st.session_state[last_adapted_key] = (data.recipient_name or "").strip()
 
+    # Normalizzazione automatica: se il nome o il destinatario è riferito all'utente, risolvi con profilo/rubrica
+    curr_n_raw = st.session_state[name_key].strip()
+    user_profile = st.session_state.get("user_profile")
+    user_c = next((c for c in saved_contacts if "utente" in [t.lower() for t in c.tags] or "personale" in [t.lower() for t in c.tags]), None)
+
+    self_keywords = {"me", "me stesso", "myself", "io", "stesso"}
+    if user_profile:
+        if user_profile.first_name: self_keywords.add(user_profile.first_name.lower().strip())
+        if user_profile.last_name: self_keywords.add(user_profile.last_name.lower().strip())
+        if user_profile.full_name: self_keywords.add(user_profile.full_name.lower().strip())
+        for a in user_profile.aliases: self_keywords.add(a.lower().strip())
+    elif user_c:
+        if user_c.first_name: self_keywords.add(user_c.first_name.lower().strip())
+        if user_c.last_name: self_keywords.add(user_c.last_name.lower().strip())
+        for a in user_c.aliases: self_keywords.add(a.lower().strip())
+
+    if any(curr_n_raw.lower() == k for k in self_keywords):
+        resolved_name = user_c.first_name if user_c else (user_profile.first_name if user_profile else "")
+        resolved_email = user_c.email if user_c and user_c.email else (user_profile.email if user_profile else "")
+        if resolved_name and curr_n_raw.lower() in ("me", "me stesso", "myself", "io"):
+            st.session_state[name_key] = resolved_name
+            data.recipient_name = resolved_name
+        if resolved_email and not (st.session_state.get(email_key) or "").strip():
+            st.session_state[email_key] = resolved_email
+            data.recipient_email = resolved_email
+
     # Aggiorna il nome nel payload senza mai cancellare l'indirizzo email inserito
     current_name = st.session_state[name_key].strip()
     data.recipient_name = current_name
@@ -105,7 +131,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
         # 2. Se ancora vuoto, cerca tra le entità della sessione o nel prompt
         if not st.session_state[email_key].strip():
             session_obj = st.session_state.get("current_session")
-            is_self = any(k in clean_target for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+            is_self = any(k in clean_target for k in self_keywords)
             if session_obj and getattr(session_obj, "entities", None):
                 for ent in session_obj.entities:
                     if getattr(ent, "email", None) and ent.email.strip():
@@ -113,7 +139,7 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                         if (
                             ent_lower in clean_target
                             or clean_target in ent_lower
-                            or (is_self and any(k in ent_lower for k in ("me", "stesso", "davide", "berno", "io", "myself")))
+                            or (is_self and any(k in ent_lower for k in self_keywords))
                         ):
                             data.recipient_email = ent.email.strip()
                             st.session_state[email_key] = ent.email.strip()
@@ -251,9 +277,23 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                 contact_labels = [placeholder_opt] + [
                     f"👤 {c.first_name} {c.last_name}".strip() + f" <{c.email}>" for c in contacts_with_email
                 ]
+                # Pre-selezione automatica se corrisponde al contatto associato
+                match_idx = 0
+                check_mail = (st.session_state.get(email_key) or data.recipient_email or "").strip().lower()
+                check_name = (st.session_state.get(name_key) or data.recipient_name or "").strip().lower()
+                for i_c, c in enumerate(contacts_with_email):
+                    c_mail = (c.email or "").strip().lower()
+                    c_fn = (c.first_name or "").strip().lower()
+                    c_full = f"{c.first_name} {c.last_name}".strip().lower()
+                    c_alias = [a.lower().strip() for a in (c.aliases or [])]
+                    if (check_mail and c_mail == check_mail) or (check_name and (check_name in (c_fn, c_full) or check_name in c_alias)):
+                        match_idx = i_c + 1
+                        break
+
                 selected_opt = st.selectbox(
                     "Scegli dalla rubrica contatti:",
                     options=contact_labels,
+                    index=match_idx,
                     key=f"quick_contact_pick_{mail_action.id}",
                     help="Seleziona un contatto per compilare automaticamente nome e indirizzo email.",
                 )
@@ -387,7 +427,12 @@ def render_email_card(mail_action: ProposedAction, know_action: Optional[Propose
                                 if (clean_target_name in (sc_full, sc.first_name.lower().strip()) or clean_target_name in sc_aliases) and not (sc.email or "").strip():
                                     sc.email = curr_email.strip()
                                     run_async(repo.add_contact(sc))
-                                    st.toast(f"Email di {sc.first_name} salvata automaticamente in rubrica!", icon="💾")
+                                    if "knowledge" in st.session_state and st.session_state.knowledge:
+                                        try:
+                                            run_async(st.session_state.knowledge.save_or_update_contact(sc))
+                                        except Exception:
+                                            pass
+                                    st.toast(f"Email di {sc.first_name} salvata automaticamente in rubrica e Second Brain!", icon="💾")
                                     break
 
                         ok, msg = run_async(committer.execute_action(mail_action, user_modified_payload=data.model_dump(mode="json")))

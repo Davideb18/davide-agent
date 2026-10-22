@@ -10,6 +10,8 @@ from ...domain.models import (
     PersonHistorySummary,
     PersonInteractionRecord,
     SessionExtractionResult,
+    Contact,
+    UserProfile,
 )
 from ...domain.enums import ActionType, ActionStatus
 
@@ -208,17 +210,29 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
         return f"{safe or 'Contatto'}.md"
 
     def _find_person_file(self, person_name: str) -> Optional[Path]:
-        """Individua in modo flessibile il file markdown del contatto."""
+        """Individua in modo flessibile il file markdown del contatto cercando in tutte le cartelle contatti."""
         safe_name = self._safe_person_filename(person_name)
-        p = self.contacts_dir / safe_name
-        if p.exists():
-            return p
-        clean = person_name.strip().replace(" ", "_").lower()
-        if self.contacts_dir.exists():
-            for f in self.contacts_dir.glob("*.md"):
+        candidate_dirs = [self.contacts_dir, self.vault_path / "PEOPLE", self.vault_path / "contacts"]
+        seen = set()
+        unique_dirs = []
+        for d in candidate_dirs:
+            resolved = d.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                unique_dirs.append(d)
+
+        for d in unique_dirs:
+            if not d.exists():
+                continue
+            p = d / safe_name
+            if p.exists():
+                return p
+            clean = person_name.strip().replace(" ", "_").lower()
+            for f in d.glob("*.md"):
                 if f.stem.lower() == clean or f.stem.lower() == person_name.strip().lower():
                     return f
         return None
+
 
     async def get_person_history(self, person_name: str) -> Optional[PersonHistorySummary]:
         """
@@ -298,7 +312,7 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
         Preserva rigorosamente il frontmatter YAML e il contenuto manuale preesistente.
         """
         filename = self._safe_person_filename(person_name)
-        file_path = self.contacts_dir / filename
+        file_path = self._find_person_file(person_name) or (self.contacts_dir / filename)
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # 1. Se il dossier non esiste, lo crea con la struttura base
@@ -383,6 +397,10 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
         Recupera la preferenza linguistica specificata nel profilo utente all'interno del Second Brain.
         Cerca in file come IDENTITY/Profile.md, Profile.md, User_Profile.md.
         """
+        profile = await self.get_user_profile()
+        if profile and profile.language:
+            return self._normalize_language_name(profile.language)
+
         candidate_files = [
             self.vault_path / "IDENTITY" / "Profile.md",
             self.vault_path / "IDENTITY" / "profile.md",
@@ -404,7 +422,6 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
 
-                # 1. Cerca nel frontmatter YAML (es. language: it / lingua: italiano / preferred_language: en)
                 yaml_matches = re.findall(
                     r"(?i)^(?:language|lingua|preferred_language|lingua_preferita)\s*:\s*[\"']?([a-zA-Z_-]+)[\"']?",
                     content,
@@ -414,7 +431,6 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                     val = yaml_matches[0].strip().lower()
                     return self._normalize_language_name(val)
 
-                # 2. Cerca nel corpo markdown (es. - **Lingua**: Italiano / **Language**: English)
                 body_matches = re.findall(
                     r"(?i)(?:-|\*)\s*\*\*(?:lingua|language|lingua preferita|preferred language)\*\*:\s*([a-zA-Z]+)",
                     content,
@@ -426,6 +442,257 @@ Scheda arricchita automaticamente dall'Executive AI Agent.
                 continue
 
         return None
+
+    async def get_user_profile(self) -> Optional[UserProfile]:
+        """
+        Legge il profilo completo dell'utente da IDENTITY/Profile.md (vault source of truth).
+        Parsa frontmatter YAML + corpo markdown per estrarre nome, email, lingua, fuso orario.
+        """
+        candidate_files = [
+            self.vault_path / "IDENTITY" / "Profile.md",
+            self.vault_path / "IDENTITY" / "profile.md",
+            self.vault_path / "IDENTITY" / "User_Profile.md",
+            self.vault_path / "Profile.md",
+        ]
+        identity_dir = self.vault_path / "IDENTITY"
+        if identity_dir.exists():
+            for f in sorted(identity_dir.glob("*.md")):
+                if f not in candidate_files:
+                    candidate_files.append(f)
+
+        for filepath in candidate_files:
+            if not filepath.exists():
+                continue
+            try:
+                content = filepath.read_text(encoding="utf-8")
+
+                # Estrazione frontmatter YAML grezzo
+                fm: Dict[str, str] = {}
+                fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+                if fm_match:
+                    for line in fm_match.group(1).splitlines():
+                        if ":" in line and not line.strip().startswith("-"):
+                            k, _, v = line.partition(":")
+                            fm[k.strip().lower()] = v.strip().strip('"').strip("'")
+
+                full_name = fm.get("name", "")
+                parts = full_name.split(" ", 1) if full_name else ["", ""]
+                first = parts[0].strip()
+                last = (parts[1].strip() if len(parts) > 1 else "")
+
+                email = fm.get("email", "")
+                company = fm.get("company", "")
+                role = fm.get("role", "")
+                tz = fm.get("timezone", fm.get("tz", "Europe/Rome"))
+                lang_raw = (
+                    fm.get("preferred_language")
+                    or fm.get("lingua_preferita")
+                    or fm.get("language")
+                    or fm.get("lingua")
+                    or ""
+                )
+                if not lang_raw:
+                    body_matches = re.findall(
+                        r"(?i)(?:-|\*)\s*\*\*(?:lingua|language|lingua preferita|preferred language)\*\*:\s*([a-zA-Z]+)",
+                        content,
+                    )
+                    if body_matches:
+                        lang_raw = body_matches[0].strip()
+
+                # Cerca email nel corpo se non nel frontmatter
+                if not email:
+                    em_match = re.search(
+                        r"(?i)\*\*email\*\*\s*:\s*([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)",
+                        content,
+                    )
+                    if em_match:
+                        email = em_match.group(1).strip()
+
+                if not full_name:
+                    continue
+
+                aliases = [first, full_name, "Me", "Me stesso", "Io", "Myself"] if first else []
+
+                return UserProfile(
+                    full_name=full_name,
+                    first_name=first,
+                    last_name=last,
+                    email=email,
+                    company=company,
+                    role=role,
+                    language=self._normalize_language_name(lang_raw) if lang_raw else "",
+                    timezone=tz or "Europe/Rome",
+                    aliases=aliases,
+                    tags=["utente", "personale"],
+                )
+            except Exception:
+                continue
+        return None
+
+    def _parse_contact_file(self, filepath: Path) -> Optional[Contact]:
+        """Estrae un oggetto Contact dai metadati frontmatter di un file Markdown."""
+        try:
+            content = filepath.read_text(encoding="utf-8")
+            fm: Dict[str, str] = {}
+            fm_body = ""
+            fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+            if fm_match:
+                fm_body = fm_match.group(1)
+                for line in fm_body.splitlines():
+                    if ":" in line and not line.strip().startswith("-"):
+                        k, _, v = line.partition(":")
+                        fm[k.strip().lower()] = v.strip().strip('"').strip("'")
+
+            full_name = fm.get("name", filepath.stem.replace("_", " "))
+            parts = full_name.split(" ", 1) if full_name else [filepath.stem, ""]
+            first = parts[0].strip()
+            last = (parts[1].strip() if len(parts) > 1 else "")
+
+            email = fm.get("email", "")
+            company = fm.get("company", "N/D")
+            role = fm.get("role", "Contatto")
+            tz = fm.get("timezone", "Europe/Rome")
+
+            # Parse YAML list fields (aliases, tags) — supporta sia indentato che inline
+            def _parse_yaml_list(fm_text: str, key: str) -> List[str]:
+                items: List[str] = []
+                in_block = False
+                for line in fm_text.splitlines():
+                    stripped = line.strip()
+                    if stripped.lower().startswith(f"{key}:"):
+                        remainder = stripped[len(key) + 1:].strip()
+                        if remainder.startswith("["):
+                            inner = remainder.strip("[]").strip()
+                            for item in inner.split(","):
+                                cleaned = item.strip().strip('"').strip("'").strip()
+                                if cleaned:
+                                    items.append(cleaned)
+                            in_block = False
+                        else:
+                            in_block = True
+                        continue
+                    if in_block:
+                        if stripped.startswith("- "):
+                            items.append(stripped[2:].strip().strip('"').strip("'"))
+                        elif stripped and not stripped.startswith("#"):
+                            in_block = False
+                return items
+
+            aliases_raw = _parse_yaml_list(fm_body, "aliases")
+            tags_raw = _parse_yaml_list(fm_body, "tags")
+
+            if not aliases_raw:
+                aliases_raw = [a for a in [first, full_name] if a]
+            if not tags_raw:
+                tags_raw = ["network"]
+
+            contact_id = f"cnt_{self._slugify(full_name)}"
+
+            return Contact(
+                id=contact_id,
+                first_name=first,
+                last_name=last,
+                email=email,
+                company=company,
+                role=role,
+                aliases=aliases_raw,
+                tags=tags_raw,
+                timezone=tz,
+            )
+        except Exception:
+            return None
+
+    async def get_all_contacts(self) -> List[Contact]:
+        """
+        Scansiona PEOPLE/*.md e contacts/*.md e restituisce la lista completa di Contact dal vault.
+        Il vault Obsidian è la source of truth; SQLite è solo il cache locale.
+        """
+        contacts: List[Contact] = []
+        candidate_dirs = [self.contacts_dir]
+        for alt in (self.vault_path / "PEOPLE", self.vault_path / "contacts"):
+            if alt.exists() and alt not in candidate_dirs:
+                candidate_dirs.append(alt)
+
+        seen_stems = set()
+        for cdir in candidate_dirs:
+            if not cdir.exists():
+                continue
+            for filepath in sorted(cdir.glob("*.md")):
+                if filepath.stem.lower() in seen_stems:
+                    continue
+                seen_stems.add(filepath.stem.lower())
+                c = self._parse_contact_file(filepath)
+                if c:
+                    contacts.append(c)
+
+        return contacts
+
+    async def save_or_update_contact(self, contact: Contact) -> str:
+        """
+        Salva o aggiorna atomicamente un contatto nel Second Brain (PEOPLE/<Name>.md).
+        Se il file esiste già, aggiorna solo il frontmatter preservando il corpo storico.
+        """
+        full_name = f"{contact.first_name} {contact.last_name}".strip()
+        filename = self._safe_person_filename(full_name)
+        existing_path = self._find_person_file(full_name) or (
+            self._find_person_file(contact.first_name) if not contact.last_name else None
+        )
+        file_path = existing_path or (self.contacts_dir / filename)
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        aliases_yaml = "\n".join([f'  - "{a}"' for a in contact.aliases]) if contact.aliases else ""
+        tags_yaml = "\n".join([f"  - {t}" for t in contact.tags]) if contact.tags else "  - contact"
+
+        new_fm = f"""---
+name: "{full_name}"
+type: person
+email: "{contact.email}"
+company: "{contact.company}"
+role: "{contact.role}"
+timezone: "{contact.timezone}"
+tags:
+{tags_yaml}
+aliases:
+{aliases_yaml}
+created: {now_str}
+---"""
+
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                # Sostituisce solo il frontmatter, preserva il corpo storico
+                new_content = re.sub(
+                    r"^---\s*\n.*?\n---",
+                    new_fm,
+                    content,
+                    count=1,
+                    flags=re.DOTALL,
+                )
+                if new_content == content:
+                    new_content = new_fm + "\n\n" + content
+                tmp_path = file_path.with_suffix(".md.tmp")
+                tmp_path.write_text(new_content, encoding="utf-8")
+                tmp_path.replace(file_path)
+            except Exception:
+                pass
+        else:
+            initial = f"""{new_fm}
+
+# [[{full_name}]]
+
+- **Tipo:** Dossier Persona / Relazione Professionale
+- **Creato il:** {now_str}
+
+## 📌 Profilo & Preferenze Note
+Scheda arricchita automaticamente dall'Executive AI Agent.
+
+---
+
+## 📜 Storico Interazioni & Riunioni
+"""
+            file_path.write_text(initial, encoding="utf-8")
+
+        return str(file_path)
 
     async def get_vault_graph_data(
         self, active_session: Optional[SessionExtractionResult] = None

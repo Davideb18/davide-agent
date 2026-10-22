@@ -23,7 +23,15 @@ def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult
         return ent.email.strip()
 
     ent_name = (ent.raw_name or "").lower().strip()
-    is_self = any(k in ent_name for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+    user_profile = st.session_state.get("user_profile")
+    self_names = {"me", "stesso", "io", "myself"}
+    if user_profile:
+        if user_profile.first_name: self_names.add(user_profile.first_name.lower())
+        if user_profile.last_name: self_names.add(user_profile.last_name.lower())
+        if user_profile.full_name: self_names.add(user_profile.full_name.lower())
+        for a in user_profile.aliases: self_names.add(a.lower())
+
+    is_self = any(k in ent_name for k in self_names)
 
     # 2. Controlla tra le proposed_actions di tipo EMAIL_DRAFT
     for act in session.proposed_actions:
@@ -33,7 +41,7 @@ def _resolve_entity_email(ent: ExtractedEntity, session: SessionExtractionResult
             if ent_name in r_name or r_name in ent_name:
                 ent.email = r_email
                 return r_email
-            if is_self and (any(k in r_name for k in ("me", "stesso", "davide", "berno", "io", "myself")) or "davide" in r_email or "berno" in r_email):
+            if is_self and (any(k in r_name for k in self_names) or (user_profile and user_profile.email and user_profile.email.lower() in r_email.lower())):
                 ent.email = r_email
                 return r_email
 
@@ -196,12 +204,20 @@ def render_sidebar(session: SessionExtractionResult):
             for idx, target_ent in enumerate(other_entities[:4]):
                 ent_email = _resolve_entity_email(target_ent, session)
                 raw_lower = target_ent.raw_name.lower().strip()
-                is_self = any(k in raw_lower for k in ("me", "stesso", "davide", "berno", "io", "myself"))
+                user_profile = st.session_state.get("user_profile")
+                self_names = {"me", "stesso", "io", "myself"}
+                if user_profile:
+                    if user_profile.first_name: self_names.add(user_profile.first_name.lower())
+                    if user_profile.last_name: self_names.add(user_profile.last_name.lower())
+                    if user_profile.full_name: self_names.add(user_profile.full_name.lower())
+                    for a in user_profile.aliases: self_names.add(a.lower())
+
+                is_self = any(k in raw_lower for k in self_names)
 
                 if is_self:
-                    default_fn = "Davide"
-                    default_ln = "Berno"
-                    default_desc = "Personale / Utente"
+                    default_fn = user_profile.first_name if user_profile else "Me"
+                    default_ln = user_profile.last_name if user_profile else ""
+                    default_desc = user_profile.role if (user_profile and user_profile.role) else "Personale / Utente"
                 else:
                     raw_parts = target_ent.raw_name.strip().split(maxsplit=1)
                     default_fn = raw_parts[0] if raw_parts else target_ent.raw_name.strip()
@@ -241,13 +257,18 @@ def render_sidebar(session: SessionExtractionResult):
                             first_name=q_fn.strip() or target_ent.raw_name,
                             last_name=q_ln.strip(),
                             email=q_mail.strip(),
-                            company="Trellis" if is_self else "N/D",
+                            company=(user_profile.company if (is_self and user_profile and user_profile.company) else "N/D"),
                             role=q_desc.strip() or default_desc,
                             aliases=[target_ent.raw_name, q_fn.strip(), f"{q_fn.strip()} {q_ln.strip()}".strip()],
                             tags=["utente"] if is_self else (["famiglia"] if default_desc == "Famiglia" else ["network"]),
                             timezone=st.session_state.get("user_timezone", "Europe/Rome"),
                         )
                         run_async(st.session_state.repo.add_contact(new_contact))
+                        if "knowledge" in st.session_state and st.session_state.knowledge:
+                            try:
+                                run_async(st.session_state.knowledge.save_or_update_contact(new_contact))
+                            except Exception:
+                                pass
                         target_ent.matched_contact_id = new_contact.id
                         target_ent.is_ambiguous = False
                         target_ent.email = new_contact.email
@@ -259,7 +280,7 @@ def render_sidebar(session: SessionExtractionResult):
                                 if (
                                     target_ent.raw_name.lower() in r_name
                                     or r_name in target_ent.raw_name.lower()
-                                    or (is_self and any(k in r_name for k in ("me", "stesso", "davide", "berno", "io")))
+                                    or (is_self and any(k in r_name for k in self_names))
                                 ):
                                     if not act.email_data.recipient_email:
                                         act.email_data.recipient_email = new_contact.email

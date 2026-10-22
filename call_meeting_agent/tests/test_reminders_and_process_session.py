@@ -196,3 +196,76 @@ async def test_background_second_brain_auto_sync(test_repo, tmp_path):
     assert tasks_file.exists()
     content = tasks_file.read_text(encoding="utf-8")
     assert "Aggiornare schema database" in content
+
+
+@pytest.mark.asyncio
+async def test_email_self_resolution_matches_user_contact(test_repo, tmp_path):
+    """Verifica che un'azione email con 'Me stesso' venga risolta sul contatto utente Davide (bernodavide8@gmail.com)."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    user_contact = Contact(
+        id="cnt_davide_test",
+        first_name="Davide",
+        last_name="Berno",
+        email="bernodavide8@gmail.com",
+        aliases=["Davide", "Davide Berno", "Me stesso", "Me", "Io"],
+        tags=["utente", "personale"],
+    )
+    await test_repo.add_contact(user_contact)
+
+    mock_session = SessionExtractionResult(
+        session_id="ses_self_email_001",
+        summary="Invio appunti a me stesso",
+        is_actionable=True,
+        primary_intent=IntentCategory.PERSONAL_MEMO,
+        detected_language="it",
+        raw_transcript="devi mandare un'email a me stesso con gli appunti",
+        entities=[
+            ExtractedEntity(raw_name="me stesso", entity_type="PERSON"),
+        ],
+        proposed_actions=[
+            ProposedAction(
+                id="act_email_self_001",
+                session_id="ses_self_email_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                email_data=EmailPayload(
+                    recipient_name="Me stesso",
+                    recipient_email="bernardavide88@gmail.com",
+                    subject="Appunti lezione",
+                    body_markdown="Ciao Me stesso,\nEcco gli appunti.",
+                ),
+            )
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    vault_dir = tmp_path / "vault_self"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="email a me stesso", anchor_utc=datetime.now(timezone.utc))
+
+    # L'entità estratta deve essere normalizzata sul contatto utente Davide
+    assert len(res.entities) == 1
+    ent = res.entities[0]
+    assert ent.matched_contact_id == "cnt_davide_test"
+    assert ent.raw_name == "Davide"
+    assert ent.email == "bernodavide8@gmail.com"
+
+    # L'azione EMAIL_DRAFT deve avere nome ed email ufficiali della rubrica
+    mail_act = res.proposed_actions[0]
+    assert mail_act.email_data.recipient_name == "Davide"
+    assert mail_act.email_data.recipient_email == "bernodavide8@gmail.com"
+    assert "Me stesso" not in mail_act.email_data.body_markdown
+    assert "Ciao Davide" in mail_act.email_data.body_markdown

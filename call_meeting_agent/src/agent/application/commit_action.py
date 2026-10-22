@@ -143,7 +143,7 @@ class CommitActionUseCase:
                         self.reminders = AppleRemindersAdapter()
                     success, msg = await self.reminders.export_tasks(
                         task_items=items,
-                        list_name="Aria Tasks",
+                        list_name="Promemoria",
                     )
                     if not success:
                         return False, msg

@@ -68,9 +68,12 @@ class GeminiExtractorAdapter:
         return mapping.get(ext, "audio/mp3")
 
     def _build_system_instruction(
-        self, anchor_iso: str, user_tz: str, user_profile_language: Optional[str] = None
+        self, anchor_iso: str, user_tz: str,
+        user_profile_language: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> str:
-        """Costruisce le istruzioni di sistema per Gemini con vincoli temporali e linguistici rigorosi."""
+        """Costruisce le istruzioni di sistema per Gemini con vincoli temporali, linguistici e identità utente."""
         if user_profile_language:
             lang_section = f"""
 REGOLA LINGUISTICA DA PROFILO UTENTE (SECOND BRAIN):
@@ -90,6 +93,18 @@ NON forzare mai l'italiano se l'utente parla in inglese, e non forzare l'inglese
 Popola il campo `detected_language` con il codice lingua rilevato (es. 'it', 'en', 'es', 'de', 'fr').
 """
 
+        # Sezione identità utente (dinamica dal vault)
+        effective_name = user_name or "l'utente"
+        identity_section = f"""
+IDENTITÀ UTENTE (da Second Brain Vault):
+- Nome utente: '{effective_name}'
+- Email utente: '{user_email or "(non specificata)"}'
+Regole:
+  * Quando l'utente dice "email a me stesso", "io", "me stesso" → il destinatario è '{effective_name}'{f" con email '{user_email}'" if user_email else ", email da lasciare vuota se non specificata"}.
+  * NON usare mai 'Me stesso' come nome del destinatario: usa sempre '{effective_name}'.
+  * Se l'email è per l'utente stesso, il campo `recipient_name` deve essere '{effective_name}' (non 'Me', non 'Me stesso').
+"""
+
         return f"""
 Sei un assistente esecutivo e personale avanzato per l'analisi di riunioni, note vocali, prompt testuali, promemoria, commissioni ed email.
 Il tuo compito è analizzare la registrazione o il testo fornito ed estrarre in modo rigoroso, fedele ed esaustivo tutte le informazioni e le azioni operative.
@@ -100,6 +115,7 @@ INFORMAZIONI TEMPORALI FONDAMENTALI:
 Tutte le date e gli orari citati (es. "domani alle 9", "domani sera dopo cena", "venerdì alle 18:30", "tra due ore")
 devono essere tassativamente calcolati rispetto a questo timestamp e convertiti in formato UTC ISO-8601 considerando il fuso orario {user_tz}.
 
+{identity_section}
 {lang_section}
 
 REGOLA SPECIALE: OVERRIDE LINGUA PER SINGOLA AZIONE:
@@ -109,9 +125,9 @@ L'oggetto (`subject`) e il corpo (`body_markdown`) di QUELLA SPECIFICA EMAIL DEV
 REGOLA ANTI-ALLUCINAZIONE NOMI E FONETICA:
 - NON confondere MAI parole comuni del parlato come "mezzogiorno", "mangiare", "treno", "arrivo", "riposare" per nomi propri di persone (NON inventare MAI "giorgo", "mario", ecc.)!
 - Estrai come entità o destinatari ESCLUSIVAMENTE persone reali richieste dall'utente:
-  * "email a me stesso" -> destinatario "Davide" / "Me stesso", con la propria email (es. bernardavide88@gmail.com).
-  * "email a mia mamma" -> destinatario "Mamma", email "" (stringa vuota se non fornita espressamente).
-- NON associare MAI l'email personale dell'utente (es. bernardavide88@gmail.com) ad altri contatti (es. NON metterla su Mamma o altri contatti!).
+  * "email a me stesso" → destinatario '{effective_name}' (l'utente stesso), NON usare "Me stesso"!
+  * "email a mia mamma" → destinatario "Mamma", email "" (stringa vuota se non fornita espressamente).
+- NON associare MAI l'email personale dell'utente ad altri contatti (es. NON metterla su Mamma o altri contatti!).
 
 CLASSIFICAZIONE DELLE AZIONI OPERATIVE (proposed_actions):
 Devi distinguere con estremo buon senso e precisione la natura di ciascuna richiesta:
@@ -125,15 +141,15 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
 
 2. TASK_TODO (Tutte le cose da fare, commissioni personali e faccende):
    - Genera un'azione TASK_TODO con la lista `task_items` per tutte le cose da fare, to-do, faccende domestiche e commissioni:
-     * "dare da bere alle piante" -> TASK_TODO
-     * "fare la spesa" -> TASK_TODO
-     * "prendere il treno" o "viaggio" -> contesto o TASK_TODO
+     * "dare da bere alle piante" → TASK_TODO
+     * "fare la spesa" → TASK_TODO
+     * "prendere il treno" o "viaggio" → contesto o TASK_TODO
    - Non mettere MAI le faccende in CALENDAR_EVENT!
 
 3. EMAIL_DRAFT (Bozza di messaggio email richiesta):
    - Genera SEMPRE un'azione EMAIL_DRAFT per ciascuna email esplicitamente richiesta dall'utente:
      * `recipient_email`: l'email citata per quel destinatario. Se non fornita o se l'utente dice di lasciarla vuota, lascia stringa vuota "" (NON inventare domini e NON usare l'email personale dell'utente per altri destinatari!).
-     * `recipient_name`: il nome della persona (es. 'Mamma', 'Davide').
+     * `recipient_name`: il nome della persona (es. 'Mamma', '{effective_name}'). Se l'email è per se stesso, usa '{effective_name}'.
      * `subject`: oggetto pertinente e caloroso (nella lingua richiesta per quell'email).
      * `body_markdown`: testo caloroso, naturale e fedele alle istruzioni dell'utente (nella lingua richiesta per quell'email).
      * IMPORTANTE: NON inserire MAI nel corpo email note di disponibilità slot, scuse per riunioni o date se l'email è un messaggio personale, affettivo o di appunti!
@@ -142,8 +158,8 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
    - Note e approfondimenti rilevanti da conservare nel tempo.
 
 5. ENTITÀ E RUOLI (entities):
-   - Estrai i contatti reali (es. 'Mamma', 'Davide' o 'Me stesso').
-   - Se per una persona viene citata un'email (es. "email a me stesso, quindi a bernardavide88@gmail.com"), compila TASSATIVAMENTE il campo `email` dell'entità con quell'indirizzo!
+   - Estrai i contatti reali (es. 'Mamma', '{effective_name}'). Se l'utente dice "me stesso", l'entità deve avere raw_name="{effective_name}".
+   - Se per una persona viene citata un'email nel testo, compila il campo `email` dell'entità con quell'indirizzo.
    - Per familiari o contatti personali, imposta `company="N/D"` e `role="Famiglia"` o `role="Personale"`. NON inventare ruoli aziendali ridicoli come "madre dell'utente" o "riceverà un'email".
 """
 
@@ -154,6 +170,8 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         anchor_utc: datetime,
         user_tz: str = "Europe/Rome",
         user_profile_language: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> SessionExtractionResult:
         """
         Analizza l'audio con Gemini e cascata automatica di declassazione in caso di sovraccarico (503).
@@ -161,7 +179,9 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         """
         mime_type = self._detect_mime_type(filename)
         anchor_iso = anchor_utc.isoformat()
-        system_instruction = self._build_system_instruction(anchor_iso, user_tz, user_profile_language)
+        system_instruction = self._build_system_instruction(
+            anchor_iso, user_tz, user_profile_language, user_name, user_email
+        )
 
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -255,13 +275,17 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
         anchor_utc: datetime,
         user_tz: str = "Europe/Rome",
         user_profile_language: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> SessionExtractionResult:
         """
         Analizza un testo o prompt descrittivo della giornata con Gemini e cascata automatica.
         La lingua dipende dalla lingua usata nel testo o dal profilo utente nel Second Brain.
         """
         anchor_iso = anchor_utc.isoformat()
-        system_instruction = self._build_system_instruction(anchor_iso, user_tz, user_profile_language)
+        system_instruction = self._build_system_instruction(
+            anchor_iso, user_tz, user_profile_language, user_name, user_email
+        )
 
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,

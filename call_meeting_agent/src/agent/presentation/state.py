@@ -143,12 +143,48 @@ def init():
         # 3. Database SQLite Locale
         repo = SqliteRepository("data/call_agent.db")
         run_async(repo.init_db())
-        run_async(repo.seed_default_contacts())
         st.session_state.repo = repo
 
-        # 4. Obsidian Knowledge Vault (Percorso locale di progetto)
+        # 4. Obsidian Knowledge Vault (Source of truth per contatti e identità)
         vault_path = os.getenv("OBSIDIAN_VAULT_PATH", "data/vault")
-        st.session_state.knowledge = ObsidianAdapter(vault_path=vault_path)
+        knowledge = ObsidianAdapter(vault_path=vault_path)
+        st.session_state.knowledge = knowledge
+
+        # 4b. Sincronizzazione contatti e identità dal Second Brain
+        user_profile = None
+        try:
+            user_profile = run_async(knowledge.get_user_profile())
+            st.session_state.user_profile = user_profile
+        except Exception:
+            st.session_state.user_profile = None
+
+        try:
+            vault_contacts = run_async(knowledge.get_all_contacts()) or []
+            if user_profile and user_profile.full_name:
+                has_user = any("utente" in [t.lower() for t in c.tags] for c in vault_contacts)
+                if not has_user:
+                    from src.agent.domain.models import Contact
+                    vault_contacts.insert(
+                        0,
+                        Contact(
+                            id=f"cnt_{knowledge._slugify(user_profile.full_name)}",
+                            first_name=user_profile.first_name,
+                            last_name=user_profile.last_name,
+                            email=user_profile.email or os.getenv("USER_EMAIL", ""),
+                            company=user_profile.company or "N/D",
+                            role=user_profile.role or "Utente / Personale",
+                            aliases=user_profile.aliases or ["Me stesso", "Io"],
+                            tags=["utente", "personale"],
+                            timezone=user_profile.timezone,
+                        ),
+                    )
+
+            if vault_contacts:
+                run_async(repo.sync_contacts_from_vault(vault_contacts))
+            else:
+                run_async(repo.seed_default_contacts())
+        except Exception:
+            run_async(repo.seed_default_contacts())
 
         # 5. LLM: Gemini Reale con Cascata di Declassazione Automatica
         gemini_key = os.getenv("GEMINI_API_KEY", "").strip()

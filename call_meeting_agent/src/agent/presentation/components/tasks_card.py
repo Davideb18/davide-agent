@@ -59,13 +59,12 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
 
         with col_edit:
             txt_items = "\n".join(data.task_items or [])
-            is_exec = (task_action.status == ActionStatus.EXECUTED)
             edited_tasks = st.text_area(
                 "Compiti da eseguire (uno per riga):",
                 value=txt_items,
                 height=140,
                 key=f"tasks_input_{task_action.id}",
-                disabled=is_exec,
+                disabled=False,
                 help="Modifica o aggiungi compiti prima di salvarli nel tuo progetto o in Promemoria.",
             )
             data.task_items = [t.strip() for t in edited_tasks.split("\n") if t.strip()]
@@ -76,18 +75,35 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
                 unsafe_allow_html=True,
             )
 
+            obs_synced = (task_action.status == ActionStatus.EXECUTED)
+            if not obs_synced:
+                if st.button("📓 Salva in Second Brain (Tasks.md)", key=f"btn_save_obs_tasks_{task_action.id}", type="primary", use_container_width=True):
+                    latest_raw = st.session_state.get(f"tasks_input_{task_action.id}", edited_tasks)
+                    data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
+                    with st.spinner("Salvataggio in Tasks.md..."):
+                        ok, msg = run_async(committer.execute_action(task_action, user_modified_payload={"task_items": data.task_items, "target_project": data.target_project}))
+                    if ok:
+                        st.toast(msg, icon="📋")
+                        st.rerun()
+                    else:
+                        st.error(f"Errore Second Brain: {msg}")
+            else:
+                st.markdown(
+                    '<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px; margin-bottom:8px;"><span class="aria-pill aria-pill-green">✅ Salvato in Tasks.md</span></div>',
+                    unsafe_allow_html=True,
+                )
+
             # Esporta su Apple Reminders (Promemoria macOS) — Esecuzione non-bloccante a latenza zero
             rem_synced = st.session_state.get(f"reminders_synced_{task_action.id}", False)
             if not rem_synced:
-                if st.button("🍎 Esporta su Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", type="primary", use_container_width=True):
+                if st.button("🍎 Esporta su Promemoria macOS", key=f"btn_save_reminders_{task_action.id}", use_container_width=True):
                     import uuid
                     import hashlib
-                    import threading
 
                     latest_raw = st.session_state.get(f"tasks_input_{task_action.id}", edited_tasks)
                     data.task_items = [t.strip() for t in latest_raw.split("\n") if t.strip()]
 
-                    raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}"
+                    raw_sig = f"{task_action.session_id}_reminders_{','.join(data.task_items)}_{uuid.uuid4().hex[:6]}"
                     rem_action = ProposedAction(
                         id=f"act_rem_{uuid.uuid4().hex[:8]}",
                         session_id=task_action.session_id,
@@ -96,18 +112,14 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
                         task_data=TaskPayload(task_items=data.task_items),
                     )
 
-                    def _run_bg_export():
-                        try:
-                            import asyncio
-                            asyncio.run(committer.execute_action(rem_action))
-                        except Exception as e:
-                            import logging
-                            logging.getLogger(__name__).error(f"Errore esportazione background Promemoria: {e}")
-
-                    threading.Thread(target=_run_bg_export, daemon=True).start()
-                    st.session_state[f"reminders_synced_{task_action.id}"] = True
-                    st.toast("Compiti inviati a Promemoria macOS!", icon="🍎")
-                    st.rerun()
+                    with st.spinner("Sincronizzazione in corso con Promemoria macOS..."):
+                        ok, msg = run_async(committer.execute_action(rem_action))
+                    if ok:
+                        st.session_state[f"reminders_synced_{task_action.id}"] = True
+                        st.toast(msg, icon="🍎")
+                        st.rerun()
+                    else:
+                        st.error(f"Errore Promemoria: {msg}")
             else:
                 st.markdown(
                     '<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:10px; padding:10px;"><span class="aria-pill aria-pill-green">✅ Sincronizzato con Promemoria macOS</span></div>',
@@ -115,7 +127,7 @@ def render_tasks_card(task_action: Optional[ProposedAction], committer):
                 )
 
             # Bottone Scarta
-            if not is_exec:
+            if not is_exec and not obs_synced:
                 st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
                 if st.button("Scarta Compiti", key=f"btn_rej_task_{task_action.id}", use_container_width=True):
                     run_async(committer.reject_action(task_action))

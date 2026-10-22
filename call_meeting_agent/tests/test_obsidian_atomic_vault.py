@@ -9,8 +9,9 @@ Verifica:
 """
 import pytest
 from pathlib import Path
-from src.agent.domain.models import KnowledgePayload, TaskPayload
+from src.agent.domain.models import KnowledgePayload, TaskPayload, Contact, UserProfile
 from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+from src.agent.infrastructure.database.sqlite_repo import SqliteRepository
 
 
 @pytest.mark.asyncio
@@ -152,3 +153,148 @@ async def test_tasks_markdown_append(test_obsidian: ObsidianAdapter, test_vault_
     assert "- [ ] Verificare quote commissioni Trellis" in content
     assert "- [ ] Schedulare collaudo infrastruttura" in content
     assert "Trellis Sync" in content
+
+
+@pytest.mark.asyncio
+async def test_vault_user_profile_and_contacts_extraction(test_obsidian: ObsidianAdapter, test_vault_path: Path):
+    """Verifica lettura profilo da IDENTITY/Profile.md e scansione contatti da PEOPLE/*.md."""
+    # 1. Crea IDENTITY/Profile.md
+    id_dir = test_vault_path / "IDENTITY"
+    id_dir.mkdir(parents=True, exist_ok=True)
+    (id_dir / "Profile.md").write_text(
+        """---
+type: profile
+name: Davide Berno
+age: 21
+preferred_language: it
+role: "Engineering Lead"
+company: "Trellis"
+---
+# Profilo
+**Email**: bernodavide8@gmail.com
+""",
+        encoding="utf-8",
+    )
+
+    profile = await test_obsidian.get_user_profile()
+    assert profile is not None
+    assert profile.full_name == "Davide Berno"
+    assert profile.first_name == "Davide"
+    assert profile.last_name == "Berno"
+    assert profile.email == "bernodavide8@gmail.com"
+    assert profile.company == "Trellis"
+    assert "Me stesso" in profile.aliases
+
+    # 2. Crea contatto in PEOPLE/Filippo_Calzavara.md
+    people_dir = test_vault_path / "PEOPLE"
+    people_dir.mkdir(parents=True, exist_ok=True)
+    (people_dir / "Filippo_Calzavara.md").write_text(
+        """---
+name: "Filippo Calzavara"
+type: person
+role: "Lead Engineer"
+company: "Trellis"
+email: "filippo@trellis.so"
+aliases:
+  - Fil
+  - CTO Trellis
+tags:
+  - contact
+  - trellis
+---
+# Filippo
+""",
+        encoding="utf-8",
+    )
+
+    contacts = await test_obsidian.get_all_contacts()
+    assert len(contacts) >= 1
+    fil = next((c for c in contacts if "Filippo" in c.first_name), None)
+    assert fil is not None
+    assert fil.first_name == "Filippo"
+    assert fil.last_name == "Calzavara"
+    assert fil.email == "filippo@trellis.so"
+    assert "CTO Trellis" in fil.aliases
+
+
+@pytest.mark.asyncio
+async def test_vault_to_sqlite_contacts_sync(test_obsidian: ObsidianAdapter, test_vault_path: Path, tmp_path: Path):
+    """Verifica sync_contacts_from_vault con logica UPSERT in SQLite."""
+    db_file = tmp_path / "sync_test.db"
+    repo = SqliteRepository(str(db_file))
+    await repo.init_db()
+
+    contacts = [
+        Contact(
+            id="cnt_fil_sync",
+            first_name="Filippo",
+            last_name="Calzavara",
+            email="filippo@trellis.so",
+            company="Trellis",
+            role="CTO",
+            aliases=["Fil"],
+            tags=["trellis"],
+        )
+    ]
+
+    synced = await repo.sync_contacts_from_vault(contacts)
+    assert synced == 1
+
+    saved = await repo.get_contacts()
+    assert len(saved) == 1
+    assert saved[0].id == "cnt_fil_sync"
+    assert saved[0].email == "filippo@trellis.so"
+
+
+@pytest.mark.asyncio
+async def test_cross_directory_contact_search_and_update(test_vault_path: Path):
+    """Verifica che _find_person_file e save_or_update_contact aggiornino i file in PEOPLE/ anche se contacts_dir è contacts/."""
+    people_dir = test_vault_path / "PEOPLE"
+    people_dir.mkdir(parents=True, exist_ok=True)
+    filippo_md = people_dir / "Filippo_Calzavara.md"
+    filippo_md.write_text(
+        """---
+name: "Filippo Calzavara"
+type: person
+email: ""
+company: "Trellis"
+---
+# [[Filippo Calzavara]]
+Corpo storico del contatto.
+""",
+        encoding="utf-8",
+    )
+
+    # Inizializziamo l'adapter con contacts_dir puntato a contacts/
+    adapter = ObsidianAdapter(vault_path=str(test_vault_path))
+    adapter.contacts_dir = test_vault_path / "contacts"
+    adapter.contacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Verifica che _find_person_file trovi il contatto in PEOPLE/
+    found = adapter._find_person_file("Filippo Calzavara")
+    assert found is not None
+    assert found.resolve() == filippo_md.resolve()
+
+    # 2. Aggiornamento contatto: deve aggiornare in-place in PEOPLE/ senza duplicare in contacts/
+    updated_contact = Contact(
+        id="cnt_fil",
+        first_name="Filippo",
+        last_name="Calzavara",
+        email="filippo@trellis.so",
+        company="Trellis",
+        role="CTO",
+        aliases=["Fil"],
+        tags=["contact"],
+    )
+    saved_path_str = await adapter.save_or_update_contact(updated_contact)
+    assert Path(saved_path_str).resolve() == filippo_md.resolve()
+
+    # Verifica contenuto aggiornato e preservazione corpo
+    content = filippo_md.read_text(encoding="utf-8")
+    assert 'email: "filippo@trellis.so"' in content
+    assert "Corpo storico del contatto." in content
+
+    # Verifica nessun duplicato in contacts/
+    assert not (adapter.contacts_dir / "Filippo_Calzavara.md").exists()
+
+

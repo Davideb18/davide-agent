@@ -11,6 +11,7 @@ from .models import (
     TaskPayload,
     PersonHistorySummary,
     ProposedAction,
+    UserProfile,
 )
 
 
@@ -23,6 +24,8 @@ class LLMExtractorPort(Protocol):
         anchor_utc: datetime,
         user_tz: str = "Europe/Rome",
         user_profile_language: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> SessionExtractionResult:
         ...
 
@@ -32,6 +35,8 @@ class LLMExtractorPort(Protocol):
         anchor_utc: datetime,
         user_tz: str = "Europe/Rome",
         user_profile_language: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_email: Optional[str] = None,
     ) -> SessionExtractionResult:
         ...
 
@@ -53,7 +58,7 @@ class CalendarServicePort(Protocol):
     
     # cerca i prossimi 3 slot liberi
     async def find_alternative_slots(
-        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3
+        self, requested_start_utc: datetime, duration_minutes: int, count: int = 3, user_tz: str = "Europe/Rome"
     ) -> List[datetime]:
         ...
 
@@ -113,7 +118,11 @@ class RepositoryPort(Protocol):
 
     async def delete_contact(self, contact_id: str) -> None:
         ...
-    
+
+    async def sync_contacts_from_vault(self, contacts: List[Contact]) -> int:
+        """Upserta la lista di contatti da Vault nel DB SQLite. Ritorna il numero di contatti sincronizzati."""
+        ...
+
 class KnowledgeServicePort(Protocol):
     """Contratto per il Second Brain: salvataggio note riunione e aggiornamento profili persone."""
 
@@ -147,6 +156,18 @@ class KnowledgeServicePort(Protocol):
 
     # Recupera l'eventuale preferenza linguistica dal profilo utente nel Second Brain
     async def get_user_profile_language(self) -> Optional[str]:
+        ...
+
+    # Legge il profilo completo dell'utente da IDENTITY/Profile.md (vault source of truth)
+    async def get_user_profile(self) -> Optional[UserProfile]:
+        ...
+
+    # Scansiona PEOPLE/*.md e restituisce la lista di Contact dal vault
+    async def get_all_contacts(self) -> List[Contact]:
+        ...
+
+    # Salva o aggiorna un contatto in PEOPLE/<Name>.md nel vault
+    async def save_or_update_contact(self, contact: Contact) -> str:
         ...
 
     # Costruisce la topologia del Grafo di Conoscenza del Second Brain per la visualizzazione D3.js

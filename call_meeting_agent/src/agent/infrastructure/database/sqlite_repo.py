@@ -45,6 +45,18 @@ class SqliteRepository:
 
             demo_contacts = [
                 (
+                    "cnt_davide",
+                    "Davide",
+                    "Berno",
+                    "bernodavide8@gmail.com",
+                    "Trellis",
+                    "Utente / Personale",
+                    json.dumps(["Davide", "Davide Berno", "Me stesso", "Me", "Io", "Myself"]),
+                    json.dumps(["utente", "personale", "trellis"]),
+                    "Europe/Rome",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+                (
                     "cnt_filippo",
                     "Filippo",
                     "Calzavara",
@@ -322,4 +334,49 @@ class SqliteRepository:
                 row = await cursor.fetchone()
                 return row is not None
 
+    async def sync_contacts_from_vault(self, contacts: "List[Contact]") -> int:
+        """
+        Sincronizza (upsert) i contatti letti dal Vault Obsidian nel database SQLite.
+        Il vault è la source of truth: aggiorna i record esistenti senza cancellare
+        i contatti aggiunti manualmente fuori dal vault.
+        Ritorna il numero di contatti sincronizzati.
+        """
+        if not contacts:
+            return 0
+
+        count = 0
+        async with aiosqlite.connect(self.db_path) as db:
+            for contact in contacts:
+                await db.execute(
+                    """
+                    INSERT INTO contacts (
+                        id, first_name, last_name, email, company, role,
+                        aliases_json, tags_json, timezone, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        first_name = excluded.first_name,
+                        last_name = excluded.last_name,
+                        email = CASE WHEN excluded.email != '' THEN excluded.email ELSE contacts.email END,
+                        company = CASE WHEN excluded.company != 'N/D' THEN excluded.company ELSE contacts.company END,
+                        role = CASE WHEN excluded.role != 'Contatto' THEN excluded.role ELSE contacts.role END,
+                        aliases_json = excluded.aliases_json,
+                        tags_json = excluded.tags_json,
+                        timezone = excluded.timezone
+                    """,
+                    (
+                        contact.id,
+                        contact.first_name,
+                        contact.last_name,
+                        contact.email,
+                        contact.company,
+                        contact.role,
+                        json.dumps(contact.aliases),
+                        json.dumps(contact.tags),
+                        contact.timezone,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                count += 1
+            await db.commit()
+        return count
 

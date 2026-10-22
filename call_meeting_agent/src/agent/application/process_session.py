@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from ..domain.models import (
     SessionExtractionResult,
     Contact,
+    UserProfile,
     ExtractedEntity,
     ProposedAction,
     TaskPayload,
@@ -45,7 +46,10 @@ class ProcessSessionUseCase:
         self.repo = repository
 
     def _disambiguate_entity(
-        self, entity: ExtractedEntity, contacts: List[Contact]
+        self,
+        entity: ExtractedEntity,
+        contacts: List[Contact],
+        user_profile: Optional[UserProfile] = None,
     ) -> ExtractedEntity:
         """
         Algoritmo a 3 livelli (The Trellis Way):
@@ -56,48 +60,45 @@ class ProcessSessionUseCase:
         candidates: List[Contact] = []
 
         # 1. Ricerca candidati per nome, cognome o alias
-        is_self = any(k in raw_lower for k in ("me stesso", "myself", "io", "berno davide", "davide berno", "davide"))
+        user_kws = {"me stesso", "myself", "io", "me", "self"}
+        if user_profile:
+            if user_profile.first_name:
+                user_kws.add(user_profile.first_name.lower().strip())
+            if user_profile.full_name:
+                user_kws.add(user_profile.full_name.lower().strip())
+            for a in user_profile.aliases:
+                user_kws.add(a.lower().strip())
+
+        is_self = any(k == raw_lower or k in raw_lower for k in user_kws)
         for c in contacts:
             full_name = f"{c.first_name} {c.last_name}".lower().strip()
             aliases_lower = [a.lower().strip() for a in c.aliases]
+            c_tags = [t.lower() for t in c.tags]
+            is_c_user = "utente" in c_tags or "personale" in c_tags
             if (
                 raw_lower == c.first_name.lower().strip()
                 or raw_lower == full_name
                 or raw_lower in aliases_lower
-                or (is_self and ("utente" in [t.lower() for t in c.tags] or "davide" in c.first_name.lower() or "berno" in c.last_name.lower()))
+                or (is_self and is_c_user)
             ):
                 candidates.append(c)
 
-        if len(candidates) == 1:
-            # Match perfetto univoco!
-            entity.matched_contact_id = candidates[0].id
+        if len(candidates) >= 1:
+            # Se è l'utente ("me stesso", "io"), seleziona prioritariamente il contatto utente salvato
+            matched = candidates[0]
+            if is_self:
+                user_cand = next((c for c in candidates if "utente" in [t.lower() for t in c.tags] or "personale" in [t.lower() for t in c.tags]), None)
+                if user_cand:
+                    matched = user_cand
+
+            entity.matched_contact_id = matched.id
             entity.is_ambiguous = False
             entity.candidate_ids = []
-            if not getattr(entity, "email", None) and candidates[0].email:
-                entity.email = candidates[0].email
-            return entity
-
-        if len(candidates) > 1:
-            # 2. C'è più di un contatto con lo stesso nome! Usiamo gli indizi di contesto
-            scored_candidates: List[Contact] = []
-            clues = [clue.lower() for clue in entity.context_clues]
-
-            for cand in candidates:
-                cand_keywords = [cand.company.lower(), cand.role.lower()] + [t.lower() for t in cand.tags]
-                if any(any(clue in kw for kw in cand_keywords) for clue in clues):
-                    scored_candidates.append(cand)
-
-            if len(scored_candidates) == 1:
-                # Disambiguato con successo grazie al contesto!
-                entity.matched_contact_id = scored_candidates[0].id
-                entity.is_ambiguous = False
-                entity.candidate_ids = []
-                return entity
-
-            # 3. Ambiguità irrisolta: Chiediamo all'umano sulla console
-            entity.matched_contact_id = None
-            entity.is_ambiguous = True
-            entity.candidate_ids = [c.id for c in candidates]
+            # Il contatto in rubrica è la fonte autoritativa per nome ed email
+            if matched.email:
+                entity.email = matched.email
+            if is_self or entity.raw_name.lower().strip() in ("me", "me stesso", "myself", "io"):
+                entity.raw_name = matched.first_name or (user_profile.first_name if user_profile else "Io")
             return entity
 
         entity.matched_contact_id = None
@@ -117,13 +118,22 @@ class ProcessSessionUseCase:
         if anchor_utc is None:
             anchor_utc = datetime.now(timezone.utc)
 
-        # Recupero preferenza linguistica dal profilo utente nel Second Brain (se definita)
+        # Recupero profilo utente e preferenza linguistica dal Second Brain (se definiti)
+        user_profile: Optional[UserProfile] = None
         user_profile_lang = None
         try:
-            if hasattr(self.knowledge, "get_user_profile_language"):
+            if hasattr(self.knowledge, "get_user_profile"):
+                user_profile = await self.knowledge.get_user_profile()
+            if user_profile and user_profile.language:
+                user_profile_lang = user_profile.language
+            elif hasattr(self.knowledge, "get_user_profile_language"):
                 user_profile_lang = await self.knowledge.get_user_profile_language()
         except Exception:
+            user_profile = None
             user_profile_lang = None
+
+        user_name = user_profile.full_name if user_profile else None
+        user_email = user_profile.email if user_profile else None
 
         # 1. Estrazione multimodale con Gemini (Prompt Testuale o Registrazione Audio)
         if text_prompt and text_prompt.strip():
@@ -132,6 +142,8 @@ class ProcessSessionUseCase:
                 anchor_utc=anchor_utc,
                 user_tz=user_tz,
                 user_profile_language=user_profile_lang,
+                user_name=user_name,
+                user_email=user_email,
             )
             if not getattr(session_result, "raw_transcript", None):
                 session_result.raw_transcript = text_prompt.strip()
@@ -142,6 +154,8 @@ class ProcessSessionUseCase:
                 anchor_utc=anchor_utc,
                 user_tz=user_tz,
                 user_profile_language=user_profile_lang,
+                user_name=user_name,
+                user_email=user_email,
             )
         else:
             raise ValueError("Fornire 'audio_bytes' o 'text_prompt' per l'elaborazione.")
@@ -165,38 +179,94 @@ class ProcessSessionUseCase:
         saved_contacts = await self.repo.get_contacts()
         disambiguated_entities: List[ExtractedEntity] = []
         for ent in session_result.entities:
-            disambiguated_entities.append(self._disambiguate_entity(ent, saved_contacts))
+            disambiguated_entities.append(self._disambiguate_entity(ent, saved_contacts, user_profile=user_profile))
         session_result.entities = disambiguated_entities
 
-        # Cross-linking di sicurezza: associa le email estratte alle entità e alle azioni email
+        # Assicura che le entità con contatto abbinato prendano sempre l'email ufficiale della rubrica
+        for ent in session_result.entities:
+            if ent.matched_contact_id:
+                m_c = next((c for c in saved_contacts if c.id == ent.matched_contact_id), None)
+                if m_c:
+                    if m_c.email:
+                        ent.email = m_c.email
+                    if any(k in ent.raw_name.lower() for k in ("me", "me stesso", "myself", "io")):
+                        ent.raw_name = m_c.first_name
+
+        # Riconciliazione deterministica bozze EMAIL_DRAFT con i contatti della rubrica
+        user_self_kws = {"me stesso", "myself", "io", "me", "self"}
+        if user_profile:
+            if user_profile.first_name:
+                user_self_kws.add(user_profile.first_name.lower().strip())
+            if user_profile.full_name:
+                user_self_kws.add(user_profile.full_name.lower().strip())
+            for a in user_profile.aliases:
+                user_self_kws.add(a.lower().strip())
+
+        for act in session_result.proposed_actions:
+            if act.action_type == ActionType.EMAIL_DRAFT and act.email_data:
+                r_name = (act.email_data.recipient_name or "").strip()
+                r_lower = r_name.lower()
+                is_self_act = any(k == r_lower or k in r_lower for k in user_self_kws)
+
+                # 1. Cerca il contatto associato tra le entità già disambiguate
+                matched_c = None
+                for ent in session_result.entities:
+                    if ent.matched_contact_id:
+                        ent_lower = ent.raw_name.lower()
+                        if (
+                            r_lower in ent_lower
+                            or ent_lower in r_lower
+                            or (is_self_act and any(k in ent_lower for k in user_self_kws))
+                        ):
+                            matched_c = next((c for c in saved_contacts if c.id == ent.matched_contact_id), None)
+                            if matched_c:
+                                break
+
+                # 2. Se non ancora trovato, cerca direttamente tra tutti i contatti salvati
+                if not matched_c:
+                    for c in saved_contacts:
+                        full = f"{c.first_name} {c.last_name}".lower().strip()
+                        aliases = [a.lower().strip() for a in (c.aliases or [])]
+                        c_tags = [t.lower() for t in c.tags]
+                        is_c_user = "utente" in c_tags or "personale" in c_tags
+                        if (
+                            r_lower == full
+                            or r_lower == c.first_name.lower().strip()
+                            or r_lower in aliases
+                            or (is_self_act and is_c_user)
+                        ):
+                            matched_c = c
+                            break
+
+                # 3. Il contatto salvato in rubrica è l'autorità: applica nome ed email corretti
+                if matched_c:
+                    act.email_data.recipient_name = matched_c.first_name
+                    if matched_c.email:
+                        act.email_data.recipient_email = matched_c.email
+                    elif is_self_act and user_profile and user_profile.email:
+                        act.email_data.recipient_email = user_profile.email
+
+                    if act.email_data.body_markdown:
+                        act.email_data.body_markdown = re.sub(
+                            r'^(Ciao|Buongiorno|Salve|Dear|Hi)\s+(?:Me stesso|me stesso)',
+                            rf'\1 {matched_c.first_name}',
+                            act.email_data.body_markdown,
+                            flags=re.MULTILINE,
+                        )
+
+        # Cross-linking di fallback: per entità ancora prive di email cerca nel testo/prompt
         full_context = f"{session_result.raw_transcript or ''} {text_prompt or ''}"
         found_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_context)
 
         for ent in session_result.entities:
             if not getattr(ent, "email", None):
                 ent_lower = ent.raw_name.lower().strip()
-                # 1. Match con le proposed_actions di tipo EMAIL_DRAFT
                 for act in session_result.proposed_actions:
                     if act.action_type == ActionType.EMAIL_DRAFT and act.email_data and act.email_data.recipient_email:
                         r_name = (act.email_data.recipient_name or "").lower().strip()
-                        if ent_lower in r_name or r_name in ent_lower or (any(k in ent_lower for k in ("me", "stesso", "davide", "io", "berno")) and any(k in r_name for k in ("me", "stesso", "davide", "io", "berno"))):
+                        if ent_lower in r_name or r_name in ent_lower:
                             ent.email = act.email_data.recipient_email
                             break
-                # 2. Se l'entità è l'utente ("me stesso", "davide"), usa l'email trovata nel testo
-                if not getattr(ent, "email", None) and any(k in ent_lower for k in ("me", "stesso", "davide", "io", "berno")) and found_emails:
-                    ent.email = found_emails[0]
-
-        # Sincronizza anche in senso inverso: se EMAIL_DRAFT non ha email ma l'entità o il testo sì
-        for act in session_result.proposed_actions:
-            if act.action_type == ActionType.EMAIL_DRAFT and act.email_data:
-                if not (act.email_data.recipient_email or "").strip():
-                    r_name = (act.email_data.recipient_name or "").lower().strip()
-                    for ent in session_result.entities:
-                        if getattr(ent, "email", None) and (ent.raw_name.lower().strip() in r_name or r_name in ent.raw_name.lower().strip() or (any(k in r_name for k in ("me", "stesso", "davide", "io", "berno")) and any(k in ent.raw_name.lower() for k in ("me", "stesso", "davide", "io", "berno")))):
-                            act.email_data.recipient_email = ent.email
-                            break
-                    if not (act.email_data.recipient_email or "").strip() and any(k in r_name for k in ("me", "stesso", "davide", "io", "berno")) and found_emails:
-                        act.email_data.recipient_email = found_emails[0]
 
         # People Intelligence & Memoria Storica: recupero storico del contatto
         target_person_name: Optional[str] = None
@@ -296,7 +366,10 @@ class ProcessSessionUseCase:
                 recip_email = (mail_act.email_data.recipient_email or "").lower().strip()
                 
                 # Esclude tassativamente note a se stessi o email affettive a familiari
-                is_self = recip_name in ("me", "me stesso", "myself", "davide") or "bernardavide" in recip_email
+                is_self = (
+                    any(k == recip_name or k in recip_name for k in user_self_kws)
+                    or (user_profile and user_profile.email and user_profile.email.lower() in recip_email)
+                )
                 is_family_personal = any(f in recip_name for f in ("mamma", "madre", "papà", "padre", "mum", "mom", "dad"))
 
                 # Verifica che l'email sia effettivamente un invito/follow-up per l'appuntamento
@@ -372,6 +445,7 @@ class ProcessSessionUseCase:
                             payload=act.task_data,
                             meeting_ref=act.task_data.target_project or "Meeting Sync"
                         )
+                        act.status = ActionStatus.EXECUTED
                     except Exception as e:
                         logger.warning(f"Auto-append tasks Second Brain non riuscito: {e}")
 
