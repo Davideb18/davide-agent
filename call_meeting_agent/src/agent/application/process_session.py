@@ -4,6 +4,7 @@ import hashlib
 import re
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -194,10 +195,19 @@ class ProcessSessionUseCase:
 
         # Recupero contatti noti dal Memory Graph locale per il context-grounding di Gemini
         saved_contacts = await self.repo.get_contacts()
-        known_contacts_summary = [
-            f"{c.first_name} {c.last_name} (Azienda: {c.company}, Ruolo: {c.role}, Email: {c.email or 'N/D'})"
-            for c in saved_contacts
-        ]
+        known_contacts_summary = []
+        for c in saved_contacts:
+            pref_snippet = ""
+            if self.knowledge and hasattr(self.knowledge, "get_person_history"):
+                try:
+                    c_hist = await self.knowledge.get_person_history(f"{c.first_name} {c.last_name}".strip())
+                    if c_hist and c_hist.key_preferences:
+                        pref_snippet = f", Preferenze note: {'; '.join(c_hist.key_preferences[:2])}"
+                except Exception:
+                    pass
+            known_contacts_summary.append(
+                f"{c.first_name} {c.last_name} (Azienda: {c.company}, Ruolo: {c.role}, Email: {c.email or 'N/D'}{pref_snippet})"
+            )
 
         # 1. Estrazione multimodale con Gemini (Prompt Testuale o Registrazione Audio)
         if text_prompt and text_prompt.strip():
@@ -444,7 +454,8 @@ class ProcessSessionUseCase:
             "pulire", "lavare", "bucato", "stirare", "buttare la spazzatura",
             "farmacia", "medicine", "bolletta", "bollette", "commissione", "commissioni",
             "tagliando", "meccanico", "posta", "pacco", "treno", "mangiare", "riposare",
-            "promemoria personale", "ricordarmi", "dipingere", "muri", "stanza"
+            "promemoria personale", "ricordarmi", "dipingere", "muri", "stanza",
+            "studiare", "appunti", "studio", "compiti", "ripassare", "tagliare l'erba", "lampadina"
         ]
         
         filtered_actions = []
@@ -558,6 +569,17 @@ class ProcessSessionUseCase:
                 )
                 is_family_personal = any(f in recip_name for f in ("mamma", "madre", "papà", "padre", "mum", "mom", "dad"))
 
+                # Se ci sono più email e l'evento cita espressamente un'altra persona, questa email non è l'invito per questo evento
+                recipient_mismatch = False
+                if recip_name and len(email_actions) > 1:
+                    other_recipients = [
+                        (m.email_data.recipient_name or "").lower().strip()
+                        for m in email_actions
+                        if m != mail_act and (m.email_data.recipient_name or "").strip()
+                    ]
+                    if any(other in cal_title_lower for other in other_recipients) and recip_name not in cal_title_lower:
+                        recipient_mismatch = True
+
                 # Verifica che l'email sia effettivamente un invito/follow-up per l'appuntamento
                 subject_lower = (mail_act.email_data.subject or "").lower()
                 body_lower = (mail_act.email_data.body_markdown or "").lower()
@@ -581,6 +603,7 @@ class ProcessSessionUseCase:
                     (is_match_recipient or has_meeting_keyword or is_single_pair)
                     and not is_self
                     and not is_family_personal
+                    and not recipient_mismatch
                 )
 
                 if is_meeting_invite:
@@ -608,6 +631,49 @@ class ProcessSessionUseCase:
                         time_hm = start_loc.strftime("%H:%M")
                         body = mail_act.email_data.body_markdown or ""
 
+                        # Rilevamento fuso orario di Tokyo per arricchimento di cortesia
+                        is_tokyo = any(
+                            "tokyo" in s.lower()
+                            for s in [
+                                session_result.raw_transcript or "",
+                                getattr(session_result, "summary", "") or "",
+                                cal_act.calendar_data.title or "",
+                                cal_act.calendar_data.description or "",
+                            ]
+                        )
+                        tokyo_note = ""
+                        if is_tokyo:
+                            try:
+                                tokyo_loc = cal_act.calendar_data.start_utc.astimezone(ZoneInfo("Asia/Tokyo"))
+                                tokyo_note = f" (ore {tokyo_loc.strftime('%H:%M')} a Tokyo)"
+                            except Exception:
+                                pass
+
+                        display_time_str = f"ore {time_hm}{tokyo_note}"
+
+                        # Sostituisce tassativamente qualsiasi menzione di "UTC" o "Z" con l'orario locale
+                        body = re.sub(
+                            r'(?:alle\s+)?ore\s+\d{1,2}[:\.]\d{2}\s*(?:UTC|Z)\b',
+                            f"alle {display_time_str}",
+                            body,
+                            flags=re.IGNORECASE,
+                        )
+                        body = re.sub(
+                            r'\b\d{1,2}[:\.]\d{2}\s*(?:UTC|Z)\b',
+                            display_time_str,
+                            body,
+                            flags=re.IGNORECASE,
+                        )
+
+                        # Se Tokyo è nel contesto ma non ancora menzionato nel corpo dell'email, arricchisce l'orario
+                        if is_tokyo and tokyo_note and "tokyo" not in body.lower():
+                            body = re.sub(
+                                rf'(ore\s+{re.escape(time_hm)})\b',
+                                rf'\1{tokyo_note}',
+                                body,
+                                count=1,
+                            )
+
                         if time_hm not in body and not re.search(r'\b\d{1,2}[:\.]\d{2}\b', body):
                             if re.search(r'l[\'’]orario (?:stabilito|concordato|fissato)', body, re.IGNORECASE):
                                 body = re.sub(
@@ -627,7 +693,8 @@ class ProcessSessionUseCase:
                                 tag = f"\n\n> 🗓️ **Orario Incontro**: {slot_text}"
                                 if tag not in body:
                                     body += tag
-                            mail_act.email_data.body_markdown = body
+
+                        mail_act.email_data.body_markdown = body
                 else:
                     # Email personale/slegata (es. mamma, saluti, appunti personali): NESSUN collegamento al calendario
                     mail_act.email_data.linked_calendar_action_id = None

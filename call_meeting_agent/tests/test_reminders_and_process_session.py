@@ -438,3 +438,219 @@ async def test_multiple_drafts_calendar_isolation(test_repo, tmp_path):
     assert antonio_email.email_data.recipient_email == ""
 
 
+@pytest.mark.asyncio
+async def test_anti_utc_conversion_and_tokyo_courtesy(test_repo, tmp_path):
+    """Verifica che un'email con orario grezzo in UTC (es. '18:00 UTC') venga
+    automaticamente convertita nell'orario locale (20:00) e arricchita con l'orario di Tokyo."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    vault_dir = tmp_path / "vault"
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+    # 2026-10-24 18:00 UTC = 20:00 Europe/Rome (CEST UTC+2) = 03:00 (+1d) Asia/Tokyo
+    slot_utc = datetime(2026, 10, 24, 18, 0, tzinfo=timezone.utc)
+
+    mock_session = SessionExtractionResult(
+        session_id="ses_utc_test_001",
+        summary="Call con Filippo Tokyo",
+        is_actionable=True,
+        primary_intent=IntentCategory.BUSINESS_MEETING,
+        detected_language="it",
+        raw_transcript="call Filippo Tokyo sabato",
+        entities=[],
+        proposed_actions=[
+            ProposedAction(
+                id="act_cal_utc",
+                session_id="ses_utc_test_001",
+                action_type=ActionType.CALENDAR_EVENT,
+                status=ActionStatus.PROPOSED,
+                calendar_data=CalendarPayload(
+                    title="Meeting con Filippo (Tokyo)",
+                    start_utc=slot_utc,
+                    end_utc=slot_utc + timedelta(hours=1),
+                    attendees=["filippo@trellis.so"],
+                ),
+            ),
+            ProposedAction(
+                id="act_email_utc",
+                session_id="ses_utc_test_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Filippo",
+                    recipient_email="filippo@trellis.so",
+                    subject="Call sabato",
+                    body_markdown="Ciao Filippo,\nti confermo la call fissata per sabato alle ore 18:00 UTC. A presto!",
+                ),
+            ),
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="test", anchor_utc=datetime.now(timezone.utc), user_tz="Europe/Rome")
+
+    email_act = next(a for a in res.proposed_actions if a.id == "act_email_utc")
+    body = email_act.email_data.body_markdown
+
+    # "18:00 UTC" deve essere sparito
+    assert "18:00 UTC" not in body
+    # Deve contenere l'orario locale (20:00)
+    assert "20:00" in body
+    # Deve contenere la nota di cortesia per Tokyo
+    assert "Tokyo" in body
+
+
+@pytest.mark.asyncio
+async def test_multi_email_recipient_isolation_arturo(test_repo, tmp_path):
+    """Verifica che un'email per Arturo non venga collegata alla call di Filippo anche se contiene la parola 'call' o 'sentirci'."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    vault_dir = tmp_path / "vault"
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+    slot_utc = datetime(2026, 10, 24, 8, 0, tzinfo=timezone.utc)
+
+    mock_session = SessionExtractionResult(
+        session_id="ses_multi_arturo_001",
+        summary="Call con Filippo e email professore Arturo",
+        is_actionable=True,
+        primary_intent=IntentCategory.BUSINESS_MEETING,
+        detected_language="it",
+        raw_transcript="fissare call con Filippo weekend Tokyo, mandare email ad Arturo@gmail.com",
+        entities=[],
+        proposed_actions=[
+            ProposedAction(
+                id="act_cal_filippo",
+                session_id="ses_multi_arturo_001",
+                action_type=ActionType.CALENDAR_EVENT,
+                status=ActionStatus.PROPOSED,
+                calendar_data=CalendarPayload(
+                    title="Meeting con Filippo Calzavara (Trellis)",
+                    start_utc=slot_utc,
+                    end_utc=slot_utc + timedelta(hours=1),
+                    attendees=["filippo@trellis.so"],
+                ),
+            ),
+            ProposedAction(
+                id="act_email_filippo",
+                session_id="ses_multi_arturo_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Filippo",
+                    recipient_email="filippo@trellis.so",
+                    subject="Call progetto e GitHub",
+                    body_markdown="Ciao Filippo, ecco il link GitHub. Ci sentiamo per la call di sabato alle ore 10:00.",
+                ),
+            ),
+            ProposedAction(
+                id="act_email_arturo",
+                session_id="ses_multi_arturo_001",
+                action_type=ActionType.EMAIL_DRAFT,
+                status=ActionStatus.PROPOSED,
+                email_data=EmailPayload(
+                    recipient_name="Arturo",
+                    recipient_email="Arturo@gmail.com",
+                    subject="Chiarimento lezione",
+                    body_markdown="Gentile Professor Arturo, vorrei chiederle se possiamo sentirci o fare una breve call per un chiarimento.",
+                ),
+            ),
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="test", anchor_utc=datetime.now(timezone.utc), user_tz="Europe/Rome")
+
+    filippo_mail = next(a for a in res.proposed_actions if a.id == "act_email_filippo")
+    arturo_mail = next(a for a in res.proposed_actions if a.id == "act_email_arturo")
+
+    # Filippo è collegato
+    assert filippo_mail.email_data.linked_calendar_action_id == "act_cal_filippo"
+    # L'email di Filippo viene arricchita con Tokyo
+    assert "Tokyo" in filippo_mail.email_data.body_markdown
+
+    # Arturo NON deve assolutamente essere collegato al meeting di Filippo
+    assert arturo_mail.email_data.linked_calendar_action_id is None
+    # L'email di Arturo non deve contenere l'orario di Filippo né "Tokyo"
+    assert "10:00" not in arturo_mail.email_data.body_markdown
+    assert "Tokyo" not in arturo_mail.email_data.body_markdown
+    assert arturo_mail.email_data.recipient_email.lower() == "arturo@gmail.com"
+
+
+@pytest.mark.asyncio
+async def test_chores_downgrade_studying_and_notes(test_repo, tmp_path):
+    """Verifica che task di studio/appunti catalogati erroneamente come eventi calendario vengano retrocessi a TASK_TODO."""
+    from src.agent.infrastructure.knowledge.obsidian_adapter import ObsidianAdapter
+    from src.agent.infrastructure.google.live_google import LocalCalendarService, LocalEmailService
+
+    vault_dir = tmp_path / "vault"
+    obsidian = ObsidianAdapter(vault_path=str(vault_dir))
+    slot_utc = datetime(2026, 10, 24, 14, 0, tzinfo=timezone.utc)
+
+    mock_session = SessionExtractionResult(
+        session_id="ses_chores_study_001",
+        summary="Studio e recupero appunti",
+        is_actionable=True,
+        primary_intent=IntentCategory.PERSONAL_MEMO,
+        detected_language="it",
+        raw_transcript="recuperare gli appunti delle lezioni e finirli, studiare anche gli ultimi appunti",
+        entities=[],
+        proposed_actions=[
+            ProposedAction(
+                id="act_cal_erroneous_study",
+                session_id="ses_chores_study_001",
+                action_type=ActionType.CALENDAR_EVENT,
+                status=ActionStatus.PROPOSED,
+                calendar_data=CalendarPayload(
+                    title="Studiare gli ultimi appunti delle lezioni",
+                    start_utc=slot_utc,
+                    end_utc=slot_utc + timedelta(hours=2),
+                ),
+            ),
+        ],
+    )
+
+    mock_llm = MagicMock()
+    mock_llm.extract_from_text = AsyncMock(return_value=mock_session)
+
+    orchestrator = ProcessSessionUseCase(
+        llm_extractor=mock_llm,
+        calendar_service=LocalCalendarService(),
+        email_service=LocalEmailService(),
+        knowledge_service=obsidian,
+        repository=test_repo,
+    )
+
+    res = await orchestrator.execute(text_prompt="test", anchor_utc=datetime.now(timezone.utc))
+
+    # Non devono esserci CALENDAR_EVENT
+    cal_actions = [a for a in res.proposed_actions if a.action_type == ActionType.CALENDAR_EVENT]
+    assert len(cal_actions) == 0
+
+    # Deve esserci TASK_TODO contenente lo studio
+    todo_actions = [a for a in res.proposed_actions if a.action_type == ActionType.TASK_TODO]
+    assert len(todo_actions) == 1
+    assert any("studiare" in item.lower() for item in todo_actions[0].task_data.task_items)
+
+
+

@@ -150,13 +150,16 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
 
 1. CALENDAR_EVENT (Solo per veri appuntamenti, riunioni o call con orario concordato o flessibile):
    - Genera CALENDAR_EVENT ESCLUSIVAMENTE per incontri, call o riunioni.
-   - GESTIONE FUSI ORARI E FLESSIBILITÀ (es. Tokyo / Università / sera):
-     * Se l'utente dice di dover fare una call con una persona all'estero (es. 'Lui è a Tokyo', 7-8 ore avanti) e di avere lezioni all'università di giorno, ed essere flessibile la sera più tardi:
-       Colloca la call in una fascia oraria serale libera e ragionevole (es. 20:30 o 21:00) che non si sovrapponga alle lezioni!
-       Imposta `is_flexible=True` nel CalendarPayload.
-     * Compila il campo `slot_reasoning` spiegando la logica adottata (es. 'Slot serale individuato per non sovrapporsi alle lezioni universitarie e consentire la compatibilità con il fuso orario di Tokyo').
+   - GESTIONE INTELLIGENTE DEI FUSI ORARI E PREFERENZE NOTI (es. Tokyo / Weekend / Mattina vs Sera):
+     * OVERLAP CON TOKYO (Asia/Tokyo, UTC+9, 7-8 ore avanti rispetto all'Italia):
+       - La fascia ottimale di sovrapposizione lavorativa è la MATTINA ITALIANA (09:30 - 12:30 Europe/Rome), che corrisponde al tardo pomeriggio a Tokyo (16:30 - 19:30 Tokyo).
+       - Se l'interlocutore ha preferenza per la "fascia mattutina (CET)", oppure se l'incontro è nel "weekend" o flessibile senza lezioni universitarie diurne, COLLOCA SEMPRE LA CALL NELLA MATTINA ITALIANA (es. ore 10:00 o 10:30 Europe/Rome)!
+       - Colloca la call la sera italiana (es. 20:30 o 21:00) SOLO E SOLTANTO SE l'utente dichiara esplicitamente di essere occupato di giorno (es. lezioni universitarie feriali) e specifica espressamente 'dopo cena' o 'sera'. Nel weekend o in assenza di vincoli serali espliciti, usa la mattina/primo pomeriggio compatibile con Tokyo.
+     * FLESSIBILITÀ:
+       - Imposta `is_flexible=True` nel CalendarPayload quando l'utente lascia margine ('weekend', 'orario decente', 'vedi quando farla').
+       - Compila `slot_reasoning` spiegando la logica temporale adottata (es. 'Slot mattutino (ore 10:00) individuato per rispettare la preferenza del contatto e consentire un orario pomeridiano confortevole a Tokyo (ore 17:00)').
    - REGOLA FERREA CONTRO FALSISIMI APPUNTAMENTI:
-     Faccende personali, compiti ordinari, commissioni e promemoria (es. "dare da bere alle piante", "portare fuori la spazzatura", "pulire la casa", "sistemare la stanza", "dipingere i muri") NON SONO ASSOLUTAMENTE APPUNTAMENTI DI CALENDARIO! Vanno tassativamente in `TASK_TODO`!
+     Faccende personali, compiti ordinari, commissioni e promemoria (es. "dare da bere alle piante", "portare fuori la spazzatura", "pulire la casa", "sistemare la stanza", "studiare", "recuperare appunti") NON SONO ASSOLUTAMENTE APPUNTAMENTI DI CALENDARIO! Vanno tassativamente in `TASK_TODO`!
 
 2. TASK_TODO (Tutte le cose da fare, commissioni personali e faccende):
    - Genera un'azione TASK_TODO con la lista `task_items` per tutte le cose da fare, to-do, faccende domestiche e commissioni:
@@ -164,19 +167,23 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
      * "portare fuori la spazzatura" → TASK_TODO
      * "pulire la casa" → TASK_TODO
      * "sistemare la stanza" → TASK_TODO
-     * "dipingere i muri dell'appartamento" → TASK_TODO
+     * "recuperare gli appunti delle lezioni e finirli" → TASK_TODO
+     * "studiare gli ultimi appunti" → TASK_TODO
 
 3. EMAIL_DRAFT (Bozze di messaggio email):
    - Genera azioni EMAIL_DRAFT separate per ciascun destinatario distinto.
-   - `recipient_email`: l'email corretta del destinatario (es. 'giorgio@gmail.com'). Se non fornita, lascia "" (MAI l'email personale dell'utente!).
-   - `recipient_name`: nome della persona (es. 'Giorgio', '{effective_name}').
+   - `recipient_email`: l'email corretta del destinatario (es. 'giorgio@gmail.com', 'arturo@gmail.com'). Se non fornita, lascia "" (MAI l'email personale dell'utente!).
+   - `recipient_name`: nome della persona (es. 'Filippo', 'Arturo', '{effective_name}').
+   - FORMATO ORARIO NELLE EMAIL (MAI SCRIVERE UTC NEL TESTO!):
+     Nel corpo dell'email (`body_markdown`), gli orari DEVONO ESSERE SEMPRE ESPRESSI NEL FUSO ORARIO LOCALE DELL'UTENTE ({user_tz}) o dell'interlocutore (es. "sabato 24 ottobre alle ore 10:00" oppure "sabato 24 ottobre alle ore 10:00 italiane / 17:00 a Tokyo").
+     È SEVERAMENTE VIETATO scrivere "UTC" o orari in UTC nel testo dell'email (es. MAI "ore 18:00 UTC")! Le persone reali non comunicano orari in UTC grezzo.
    - SPECIFICA ESPLICITA DELL'ORARIO:
      Se l'email ha lo scopo di concordare, confermare o comunicare l'orario di un appuntamento/call (es. per Filippo o colleghi):
-     DEVI TASSATIVAMENTE INCLUDERE nel testo del messaggio (`body_markdown`) il giorno, la data e l'orario esatto stabilito nel corrispondente CALENDAR_EVENT (es. "martedì 28 ottobre alle ore 21:00").
+     DEVI TASSATIVAMENTE INCLUDERE nel testo del messaggio (`body_markdown`) il giorno, la data e l'orario locale stabilito (es. "sabato 24 ottobre alle ore 10:00").
      NON usare mai frasi generiche senza orario come "ti confermo l'orario stabilito" senza specificare data e ora precise!
    - ZERO-HALLUCINATION SU TEMI, PROGETTI E PREFERENZE (CRITICO):
-     Nelle email (`EMAIL_DRAFT`), scrivi SOLO E RIGOROSAMENTE ciò che l'utente ha esplicitamente richiesto di comunicare (es. comunicare l'orario della call, o raccontare una battuta ad Antonio).
-     È SEVERAMENTE VIETATO inventare argomenti aziendali, rilasci di versioni (es. 'rilascio Q1', 'release', 'roadmap'), contratti, discussioni passate o presunte preferenze orarie altrui (es. 'so che preferisci la mattina') NON pronunciate dall'utente!
+     Nelle email (`EMAIL_DRAFT`), scrivi SOLO E RIGOROSAMENTE ciò che l'utente ha esplicitamente richiesto di comunicare (es. comunicare l'orario della call e il link al repository GitHub, o inviare un messaggio al professore Arturo).
+     È SEVERAMENTE VIETATO inventare argomenti aziendali non menzionati (es. 'rilascio Q1', 'roadmap', 'contratti'), discussioni passate o presunte preferenze orarie altrui NON pronunciate dall'utente!
      Tutto ciò che scrivi deve essere fondato al 100% sulla realtà espressa dall'utente.
 
 4. KNOWLEDGE_NOTE (Second Brain):
@@ -470,6 +477,19 @@ Genera il nuovo EmailPayload aggiornato limitandoti a sostituire la data/ora con
                     updated = EmailPayload.model_validate_json(response.text)
                     updated.linked_calendar_action_id = original_payload.linked_calendar_action_id
                     updated.cc = original_payload.cc
+                    if updated.body_markdown:
+                        updated.body_markdown = re.sub(
+                            r'(?:alle\s+)?ore\s+\d{1,2}[:\.]\d{2}\s*(?:UTC|Z)\b',
+                            new_slot_str,
+                            updated.body_markdown,
+                            flags=re.IGNORECASE,
+                        )
+                        updated.body_markdown = re.sub(
+                            r'\b\d{1,2}[:\.]\d{2}\s*(?:UTC|Z)\b',
+                            new_slot_str,
+                            updated.body_markdown,
+                            flags=re.IGNORECASE,
+                        )
                     return updated
             except Exception as e:
                 logger.warning(f"Modello {model} fallito in regenerate_email_draft: {e}")
