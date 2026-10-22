@@ -376,4 +376,55 @@ async def test_canonical_three_structures_and_tasks_dedup(tmp_path: Path):
     assert c2.count("Controllare metriche") == 1
 
 
+@pytest.mark.asyncio
+async def test_alias_and_prefix_person_file_resolution(tmp_path):
+    """Verifica che _find_person_file e get_person_history risolvano un contatto tramite nome proprio, prefisso o alias YAML."""
+    vault_dir = tmp_path / "vault"
+    people_dir = vault_dir / "PEOPLE"
+    people_dir.mkdir(parents=True)
+
+    filippo_md = people_dir / "Filippo_Calzavara.md"
+    filippo_md.write_text(
+        """---
+name: "Filippo Calzavara"
+type: person
+email: "filippo@trellis.so"
+company: "Trellis"
+role: "Founding Engineer"
+aliases:
+  - "Filippo"
+  - "Filippo Calzavara"
+---
+
+# Filippo Calzavara
+
+## 📌 Profilo & Preferenze Note
+- Preferisce fissare le call sempre nella fascia mattutina (CET).
+""",
+        encoding="utf-8",
+    )
+
+    adapter = ObsidianAdapter(vault_path=str(vault_dir))
+
+    # 1. Ricerca con nome completo
+    p_full = adapter._find_person_file("Filippo Calzavara")
+    assert p_full is not None
+    assert p_full.name == "Filippo_Calzavara.md"
+
+    # 2. Ricerca con solo nome di battesimo
+    p_first = adapter._find_person_file("Filippo")
+    assert p_first is not None
+    assert p_first.name == "Filippo_Calzavara.md"
+
+    # 3. get_person_history con solo nome di battesimo recupera le preferenze reali
+    hist = await adapter.get_person_history("Filippo")
+    assert hist is not None
+    assert "mattutina" in "".join(hist.key_preferences).lower()
+
+    # 4. Ricerca con stringa corta casuale non deve matchare
+    p_short = adapter._find_person_file("al")
+    assert p_short is None
+
+
+
 

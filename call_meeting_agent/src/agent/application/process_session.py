@@ -195,8 +195,13 @@ class ProcessSessionUseCase:
 
         # Recupero contatti noti dal Memory Graph locale per il context-grounding di Gemini
         saved_contacts = await self.repo.get_contacts()
+        seen_contacts = set()
         known_contacts_summary = []
         for c in saved_contacts:
+            c_key = f"{c.first_name} {c.last_name}".strip().lower()
+            if not c_key or c_key in seen_contacts:
+                continue
+            seen_contacts.add(c_key)
             pref_snippet = ""
             if self.knowledge and hasattr(self.knowledge, "get_person_history"):
                 try:
@@ -455,7 +460,7 @@ class ProcessSessionUseCase:
             "farmacia", "medicine", "bolletta", "bollette", "commissione", "commissioni",
             "tagliando", "meccanico", "posta", "pacco", "treno", "mangiare", "riposare",
             "promemoria personale", "ricordarmi", "dipingere", "muri", "stanza",
-            "studiare", "appunti", "studio", "compiti", "ripassare", "tagliare l'erba", "lampadina"
+            "studiare", "appunti", "compiti", "ripassare", "tagliare l'erba", "lampadina"
         ]
         
         filtered_actions = []

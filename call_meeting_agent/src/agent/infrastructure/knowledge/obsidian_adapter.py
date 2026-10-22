@@ -443,6 +443,36 @@ Scheda generata e arricchita automaticamente dall'Executive AI Agent durante le 
                     continue
                 if f.stem.lower() == clean or f.stem.lower() == person_name.strip().lower():
                     return f
+
+        # Secondo passaggio: ricerca per prefisso stem e per alias/nome nel frontmatter YAML
+        raw_p_lower = person_name.strip().lower()
+        clean = person_name.strip().replace(" ", "_").lower()
+        for d in unique_dirs:
+            if not d.exists():
+                continue
+            for f in d.glob("*.md"):
+                stem_lower = f.stem.lower()
+                if stem_lower in ("people", "contacts", "index", "overview", "meetings", "tasks", "home"):
+                    continue
+                # Se il nome cercato è il nome proprio nel file (es. 'filippo' per 'filippo_calzavara.md')
+                if len(clean) >= 3 and (stem_lower.startswith(clean + "_") or stem_lower.endswith("_" + clean)):
+                    return f
+                # Controllo frontmatter per aliases e name esatto
+                try:
+                    txt = f.read_text(encoding="utf-8")[:2000]
+                    aliases_match = re.search(r'aliases:\s*\n((?:\s*-\s*[^\n]+\n)+)', txt)
+                    if aliases_match:
+                        for line in aliases_match.group(1).splitlines():
+                            alias = line.strip("- \t\r\n\"'").lower()
+                            if alias and (alias == raw_p_lower or alias == clean):
+                                return f
+                    name_match = re.search(r'name:\s*["\']?([^"\'\n\r]+)["\']?', txt)
+                    if name_match:
+                        fn_val = name_match.group(1).strip().lower()
+                        if fn_val == raw_p_lower or fn_val.startswith(raw_p_lower + " "):
+                            return f
+                except Exception:
+                    pass
         return None
 
 

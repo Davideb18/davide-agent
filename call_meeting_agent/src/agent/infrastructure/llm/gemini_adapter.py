@@ -150,14 +150,16 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
 
 1. CALENDAR_EVENT (Solo per veri appuntamenti, riunioni o call con orario concordato o flessibile):
    - Genera CALENDAR_EVENT ESCLUSIVAMENTE per incontri, call o riunioni.
-   - GESTIONE INTELLIGENTE DEI FUSI ORARI E PREFERENZE NOTI (es. Tokyo / Weekend / Mattina vs Sera):
-     * OVERLAP CON TOKYO (Asia/Tokyo, UTC+9, 7-8 ore avanti rispetto all'Italia):
-       - La fascia ottimale di sovrapposizione lavorativa è la MATTINA ITALIANA (09:30 - 12:30 Europe/Rome), che corrisponde al tardo pomeriggio a Tokyo (16:30 - 19:30 Tokyo).
-       - Se l'interlocutore ha preferenza per la "fascia mattutina (CET)", oppure se l'incontro è nel "weekend" o flessibile senza lezioni universitarie diurne, COLLOCA SEMPRE LA CALL NELLA MATTINA ITALIANA (es. ore 10:00 o 10:30 Europe/Rome)!
-       - Colloca la call la sera italiana (es. 20:30 o 21:00) SOLO E SOLTANTO SE l'utente dichiara esplicitamente di essere occupato di giorno (es. lezioni universitarie feriali) e specifica espressamente 'dopo cena' o 'sera'. Nel weekend o in assenza di vincoli serali espliciti, usa la mattina/primo pomeriggio compatibile con Tokyo.
-     * FLESSIBILITÀ:
-       - Imposta `is_flexible=True` nel CalendarPayload quando l'utente lascia margine ('weekend', 'orario decente', 'vedi quando farla').
-       - Compila `slot_reasoning` spiegando la logica temporale adottata (es. 'Slot mattutino (ore 10:00) individuato per rispettare la preferenza del contatto e consentire un orario pomeridiano confortevole a Tokyo (ore 17:00)').
+   - DETERMINAZIONE DINAMICA DELLO SLOT TEMPORALE (NIENTE È FISSO, TUTTO DIPENDE DALLE INFORMAZIONI REALI):
+     * 1. PREFERENZE NOTE NEL SECOND BRAIN / PROFILO:
+       Se nei CONTATTI NOTI (SECOND BRAIN) sono indicate preferenze orarie per l'interlocutore (es. "Preferisce la fascia mattutina (CET)"), RISPETTALE RIGOROSAMENTE e colloca la call nella fascia oraria indicata dalla memoria (es. mattina).
+     * 2. ORE DI VEGLIA E BUON SENSO SUI FUSI ORARI INTERNAZIONALI:
+       Se l'utente o l'interlocutore sono in fusi orari differenti (es. utente in Italia a {user_tz}, interlocutore a Tokyo UTC+9 o altrove), l'orario scelto deve consentire a ENTRAMBI di NON DORMIRE e trovarsi in una finestra accettabile e decorosa della propria giornata locale (es. MAI collocare un incontro quando per chi è a Tokyo sono le 02:00, le 03:00 o le 04:00 di notte!).
+     * 3. SLOT LIBERO NORMALE (SE NESSUNA PREFERENZA SPECIFICA):
+       Se nel profilo dell'interlocutore NON ci sono preferenze orarie e l'utente non specifica vincoli, individua una normale fascia libera diurna lavorativa (es. 10:00, 11:00, 15:00 o 16:00), oppure l'orario esatto se esplicitato dall'utente, esattamente come fatto di consueto.
+     * 4. FLESSIBILITÀ:
+       - Imposta `is_flexible=True` nel CalendarPayload quando l'utente lascia margine ('weekend', 'orario decente', 'vedi quando farla', 'possiamo sentirci').
+       - Compila `slot_reasoning` spiegando con trasparenza la motivazione reale (es. "Orario individuato sulla base delle preferenze del contatto registrate nel Second Brain e compatibile con le ore di veglia dei rispettivi fusi orari").
    - REGOLA FERREA CONTRO FALSISIMI APPUNTAMENTI:
      Faccende personali, compiti ordinari, commissioni e promemoria (es. "dare da bere alle piante", "portare fuori la spazzatura", "pulire la casa", "sistemare la stanza", "studiare", "recuperare appunti") NON SONO ASSOLUTAMENTE APPUNTAMENTI DI CALENDARIO! Vanno tassativamente in `TASK_TODO`!
 
