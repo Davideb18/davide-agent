@@ -65,7 +65,7 @@ class SqliteRepository:
                     "Lead Engineer & Acting CTO",
                     json.dumps(["Filippo", "Fil", "CTO Trellis"]),
                     json.dumps(["trellis", "pms", "engineering", "colloquio"]),
-                    "Europe/Rome",
+                    "Asia/Tokyo",
                     datetime.now(timezone.utc).isoformat(),
                 ),
                 (

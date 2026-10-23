@@ -1,5 +1,5 @@
 """
-sidebar_view.py — Colonna sinistra (Sidebar) del CRM Aria.
+sidebar_view.py — Colonna sinistra (Sidebar) del CRM Executive Agent.
 Design pulito, contrasto elevato, zero testi da chatbot AI.
 """
 import html
@@ -70,16 +70,42 @@ def render_sidebar(session: SessionExtractionResult):
         # Header Brand
         st.markdown(
             """
-            <div style="padding: 14px 0 12px 0; border-bottom: 1px solid #E1E3EB; margin-bottom: 12px;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size: 20px;">🎙️</span>
-                    <div>
-                        <h2 style="font-size: 16.5px; font-weight: 700; color: #1A1A1E; margin: 0; letter-spacing: -0.02em;">
-                            Aria
-                        </h2>
-                        <span style="font-size: 11px; color: #6E6E73; font-weight: 600;">
-                            Riepilogo Sessione
-                        </span>
+            <div style="padding: 12px 0 12px 0; border-bottom: 1px solid #E1E3EB; margin-bottom: 12px;">
+                <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+                    <div style="
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 10px;
+                        background: #F1F3F5;
+                        border: 1px solid #D2D6DC;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 18px;
+                        flex-shrink: 0;
+                    ">🎙️</div>
+                    <div style="min-width:0; flex:1;">
+                        <div style="
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #1A1A1E;
+                            margin: 0;
+                            letter-spacing: -0.02em;
+                            white-space: nowrap;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            line-height: 1.2;
+                        ">Executive Agent</div>
+                        <div style="
+                            font-size: 11px;
+                            color: #6E6E73;
+                            font-weight: 600;
+                            white-space: nowrap;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            line-height: 1.25;
+                            margin-top: 2px;
+                        ">Riepilogo Sessione</div>
                     </div>
                 </div>
             </div>

@@ -1,5 +1,5 @@
 """
-landing.py — Schermata di Registrazione e Acquisizione di Aria.
+landing.py — Schermata di Registrazione e Acquisizione di Executive Agent.
 Interfaccia Apple-grade, zero mock, acquisizione esclusivamente tramite registrazione microfonica dal vivo.
 """
 import time
@@ -23,7 +23,7 @@ def render():
         """
         <div style="text-align: center; padding: 28px 0 24px 0;">
             <div class="eyebrow-badge" style="margin-bottom: 12px;">
-                <span>Aria • Assistente Esecutivo Vocale</span>
+                <span>Executive Agent • Assistente Vocale</span>
             </div>
             <h1 style="
                 font-size: 38px;

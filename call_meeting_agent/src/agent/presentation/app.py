@@ -1,5 +1,5 @@
 """
-app.py — Entry point di Aria.
+app.py — Entry point di Executive Agent.
 Carica lo stile Apple, inizializza i servizi e instrada verso
 la schermata di atterraggio (Landing) o la vista CRM (Dashboard).
 """
@@ -18,7 +18,7 @@ import src.agent.presentation.dashboard as dashboard
 
 # Configurazione della pagina Streamlit (Executive Apple Style)
 st.set_page_config(
-    page_title="Aria — Assistente Esecutivo Vocale",
+    page_title="Executive Agent — Assistente Vocale",
     page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="auto",

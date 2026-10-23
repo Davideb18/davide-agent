@@ -17,7 +17,7 @@ class AppleRemindersAdapter:
     """Implementazione nativa macOS di RemindersServicePort tramite AppleScript."""
 
     async def export_tasks(
-        self, task_items: List[str], list_name: str = "Aria Tasks"
+        self, task_items: List[str], list_name: str = "Executive Tasks"
     ) -> Tuple[bool, str]:
         """
         Esporta una lista di compiti direttamente nell'app Promemoria (Reminders) di Apple.

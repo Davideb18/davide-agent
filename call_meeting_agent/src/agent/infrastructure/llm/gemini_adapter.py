@@ -151,8 +151,8 @@ Devi distinguere con estremo buon senso e precisione la natura di ciascuna richi
 1. CALENDAR_EVENT (Solo per veri appuntamenti, riunioni o call con orario concordato o flessibile):
    - Genera CALENDAR_EVENT ESCLUSIVAMENTE per incontri, call o riunioni.
    - DETERMINAZIONE DINAMICA DELLO SLOT TEMPORALE (NIENTE È FISSO, TUTTO DIPENDE DALLE INFORMAZIONI REALI):
-     * 1. PREFERENZE NOTE NEL SECOND BRAIN / PROFILO:
-       Se nei CONTATTI NOTI (SECOND BRAIN) sono indicate preferenze orarie per l'interlocutore (es. "Preferisce la fascia mattutina (CET)"), RISPETTALE RIGOROSAMENTE e colloca la call nella fascia oraria indicata dalla memoria (es. mattina).
+     * 1. PREFERENZE NOTE NEL SECOND BRAIN / PROFILO E FUSI INTERNAZIONALI (CRITICO):
+       Se nei CONTATTI NOTI (SECOND BRAIN) sono indicate preferenze orarie per l'interlocutore (es. "preferisce la mattina"), RISPETTALE RIGOROSAMENTE RIFERENDOLE AL FUSO LOCALE DELL'INTERLOCUTORE! Se Filippo vive a Tokyo (Asia/Tokyo, UTC+9), la mattina DEVE ESSERE MATTINA A TOKYO (ore 09:30 - 11:30 JST di Tokyo, corrispondenti alle 02:30 - 04:30 in Italia)! MAI collocare la call nella mattina italiana se per chi è a Tokyo è già pomeriggio (14:00)! A Tokyo DEVE essere mattina come da sua preferenza! In `slot_reasoning`, esplicita che l'orario rispetta la mattina locale di Tokyo per Filippo.
      * 2. ORE DI VEGLIA E BUON SENSO SUI FUSI ORARI INTERNAZIONALI:
        Se l'utente o l'interlocutore sono in fusi orari differenti (es. utente in Italia a {user_tz}, interlocutore a Tokyo UTC+9 o altrove), l'orario scelto deve consentire a ENTRAMBI di NON DORMIRE e trovarsi in una finestra accettabile e decorosa della propria giornata locale (es. MAI collocare un incontro quando per chi è a Tokyo sono le 02:00, le 03:00 o le 04:00 di notte!).
      * 3. SLOT LIBERO NORMALE (SE NESSUNA PREFERENZA SPECIFICA):

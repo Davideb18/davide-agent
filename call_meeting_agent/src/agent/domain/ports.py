@@ -82,7 +82,7 @@ class EmailServicePort(Protocol):
 class RemindersServicePort(Protocol):
     """Contratto per l'esportazione verso Apple Reminders (Promemoria macOS)."""
     async def export_tasks(
-        self, task_items: List[str], list_name: str = "Aria Tasks"
+        self, task_items: List[str], list_name: str = "Executive Tasks"
     ) -> Tuple[bool, str]:
         ...
 

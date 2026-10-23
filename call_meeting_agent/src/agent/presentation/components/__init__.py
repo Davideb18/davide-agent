@@ -1,1 +1,1 @@
-"""Componenti per la presentazione modulare di Aria."""
+"""Componenti per la presentazione modulare di Executive Agent."""

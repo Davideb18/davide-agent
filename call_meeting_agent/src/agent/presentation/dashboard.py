@@ -1,5 +1,5 @@
 """
-dashboard.py — Controller principale della vista CRM Aria.
+dashboard.py — Controller principale della vista CRM Executive Agent.
 Design executive sobrio, contrasto elevato:
   1. Banner riepilogo con partecipanti e trascrizione integrale.
   2. Card Calendario & Timeline Conflitti (Apple Calendar).

@@ -210,8 +210,9 @@ class ProcessSessionUseCase:
                         pref_snippet = f", Preferenze note: {'; '.join(c_hist.key_preferences[:2])}"
                 except Exception:
                     pass
+            tz_snippet = f", Fuso orario: {c.timezone}" if getattr(c, "timezone", None) else ""
             known_contacts_summary.append(
-                f"{c.first_name} {c.last_name} (Azienda: {c.company}, Ruolo: {c.role}, Email: {c.email or 'N/D'}{pref_snippet})"
+                f"{c.first_name} {c.last_name} (Azienda: {c.company}, Ruolo: {c.role}, Email: {c.email or 'N/D'}{tz_snippet}{pref_snippet})"
             )
 
         # 1. Estrazione multimodale con Gemini (Prompt Testuale o Registrazione Audio)
